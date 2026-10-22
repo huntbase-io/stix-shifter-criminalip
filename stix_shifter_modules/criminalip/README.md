@@ -49,7 +49,7 @@ translator:
 |--|--|
 | Terms separated by a space are ANDed, and `NOT` negates one term. | `AND` becomes a space. `!=`, `NOT =` and `NOT IN` become `NOT filter: value`. |
 | `OR` has the lowest precedence, so `a b OR c` means `(a AND b) OR c`, and there are no parentheses. | The pattern is rewritten into disjunctive normal form (an OR of AND-groups): `[a AND (b OR c)]` becomes `a b OR a c`. `IN (x, y)` is distributed the same way. At most 64 groups are allowed. |
-| Values cannot contain spaces, and quoted values match nothing. | For a multi-word value, the longest word is sent (`software:name = 'Plesk Obsidian'` becomes `product: Obsidian`), and the full phrase is checked against each returned record on the client side. A negated multi-word value is checked only on the client side. |
+| Values cannot contain spaces, and quoted values match nothing. | For a multi-word value, the longest word is sent (`software:name = 'Plesk Obsidian'` becomes `product: Obsidian`), and the full phrase is checked against each returned record on the client side. A negated multi-word value is checked only on the client side. The operator words `OR`, `AND` and `NOT` are never sent as a value, because the server would parse them as operators; a value made only of operator words is rejected. A colon inside a value is safe (`title: port:22` is read as one value). |
 | Unknown filter names are silently treated as keywords. | Only documented filter names are emitted. Transmission checks `data.groups` and logs a warning if a filter was not recognised. |
 | `after:` always returns 0 results, but `before:` works. | `START t'..' STOP t'..'` becomes `before: <STOP date + 1 day>` plus a client-side `scan_dtime` window [START, STOP]. |
 | `ip:` accepts a single IPv4 address or a CIDR range. IPv6 is not supported. | `ipv4-addr:value = '1.2.3.0/24'` and `ISSUBSET '1.2.3.0/24'` both become `ip: 1.2.3.0/24`. An IPv6 value raises an error, and `ipv6-addr` is unmapped. |
@@ -187,7 +187,7 @@ python main.py execute criminalip criminalip '{"type":"identity","id":"identity-
 | Criminal IP field | STIX |
 |--|--|
 | `ip_address` | `ipv4-addr.value`, referenced from `network-traffic.dst_ref`, `domain-name.resolves_to_refs` and `x-criminalip-banner.ip_ref` |
-| `open_port_no`, `socket_type`, `service_name` | `network-traffic.dst_port`, `network-traffic.protocols` (lower case) |
+| `open_port_no`, `socket_type`, `service_name` | `network-traffic.dst_port`, `network-traffic.protocols` (lower case; `["ipv4"]` when both are missing) |
 | `hostname` (PTR) | `domain-name.value` |
 | `software[]`, `operating_systems[]` (v1: `product`/`product_version`) | `software.name` / `software.version`; the literal `Unknown` is dropped |
 | `ssl_info`, `ssl_*` | `x509-certificate` (subject/issuer DN, serial number, version, validity, SHA-256, signature algorithm) |
@@ -204,8 +204,14 @@ object requires `number`, and banner search does not return the ASN number.
 - Without client-side checks, stix-shifter's `offset` is used directly as the API offset.
 - With client-side checks (a time window or a multi-word phrase), `offset`/`length` count *filtered* records.
   The `metadata` returned with each page lets the caller resume without scanning again from the start.
-- A single `results` request makes at most `max_api_calls` calls (10 by default), never reads past
-  `result_limit`, and stops early on an empty page or once `count` is reached.
+- A single `results` request makes at most `max_api_calls` search calls (10 by default), never reads past
+  `result_limit`, and stops early on an empty page or once `count` is reached. Two kinds of extra call can happen on
+  top of that: up to 2 retries of a page that hit the per-key concurrency limit, and one `/v1/user/me` call after a
+  `status: 500` to tell a bad key apart from a server error.
+- If a request stops at `max_api_calls` before `length` records were found, it returns fewer records plus
+  `metadata`. Callers should pass `metadata` back with the next `offset`; without it, a query with client-side
+  checks is scanned again from the start.
+- Calls are spaced at least 0.5 s apart within one process, including across separate `results` requests.
 
 ### Error handling
 

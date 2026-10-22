@@ -26,6 +26,7 @@ see [stix_shifter_modules/criminalip/README.md](stix_shifter_modules/criminalip/
 ## Install into stix-shifter
 
 ```bash
+# upstream; Huntbase uses its fork: git clone -b develop https://github.com/huntbase-io/stix-shifter.git
 git clone https://github.com/opencybersecurityalliance/stix-shifter.git
 cd stix-shifter
 python3 -m venv .venv && . .venv/bin/activate
@@ -100,10 +101,13 @@ python main.py translate criminalip results "$IDENTITY" "$(jq -c '.data.result' 
 ```bash
 cd /path/to/stix-shifter            # with the module installed as above
 python -m pytest stix_shifter_modules/criminalip -q
-python -m pytest tests/utils -q     # stix-shifter config/lang validation across all modules
+python -m pytest tests/utils -q     # stix-shifter config/lang validation across all modules (needs a --copy install)
 flake8 stix_shifter_modules/criminalip --max-line-length=127
 python map_validator/validate_mapping.py stix_shifter_modules/criminalip/stix_translation/json/to_stix_map.json
 ```
+
+`tests/utils` walks `stix_shifter_modules/` without following symlinks, so it silently skips the module after a
+symlink install. Run it after a `--copy` install.
 
 The unit tests use trimmed real Criminal IP responses (`tests/*/sample_responses/`) and make no network calls.
 
