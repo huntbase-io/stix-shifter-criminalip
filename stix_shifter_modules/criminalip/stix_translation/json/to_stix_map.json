@@ -1,0 +1,165 @@
+{
+    "ip_address": [
+        {
+            "key": "ipv4-addr.value",
+            "object": "ip"
+        },
+        {
+            "key": "network-traffic.dst_ref",
+            "object": "nt",
+            "references": "ip"
+        },
+        {
+            "key": "x-criminalip-banner.ip_ref",
+            "object": "banner",
+            "references": "ip"
+        }
+    ],
+    "open_port_no": {
+        "key": "network-traffic.dst_port",
+        "object": "nt",
+        "transformer": "ToInteger"
+    },
+    "protocols": {
+        "key": "network-traffic.protocols",
+        "object": "nt",
+        "transformer": "ToLowercaseArray"
+    },
+    "hostname": [
+        {
+            "key": "domain-name.value",
+            "object": "domain"
+        },
+        {
+            "key": "domain-name.resolves_to_refs",
+            "object": "domain",
+            "references": [
+                "ip"
+            ]
+        }
+    ],
+    "software": {
+        "name": {
+            "key": "software.name",
+            "object": "software"
+        },
+        "version": {
+            "key": "software.version",
+            "object": "software"
+        }
+    },
+    "certificate": {
+        "subject": {
+            "key": "x509-certificate.subject",
+            "object": "cert"
+        },
+        "issuer": {
+            "key": "x509-certificate.issuer",
+            "object": "cert"
+        },
+        "serial_number": {
+            "key": "x509-certificate.serial_number",
+            "object": "cert"
+        },
+        "version": {
+            "key": "x509-certificate.version",
+            "object": "cert"
+        },
+        "validity_not_before": {
+            "key": "x509-certificate.validity_not_before",
+            "object": "cert"
+        },
+        "validity_not_after": {
+            "key": "x509-certificate.validity_not_after",
+            "object": "cert"
+        },
+        "sha256": {
+            "key": "x509-certificate.hashes.SHA-256",
+            "object": "cert"
+        },
+        "signature_algorithm": {
+            "key": "x509-certificate.signature_algorithm",
+            "object": "cert"
+        }
+    },
+    "geo": {
+        "country_iso_code": {
+            "key": "x-oca-geo.country_iso_code",
+            "object": "geo"
+        },
+        "city_name": {
+            "key": "x-oca-geo.city_name",
+            "object": "geo"
+        }
+    },
+    "observed_time": [
+        {
+            "key": "first_observed"
+        },
+        {
+            "key": "last_observed"
+        }
+    ],
+    "banner_info": {
+        "latitude": {
+            "key": "x-criminalip-banner.latitude",
+            "object": "banner"
+        },
+        "longitude": {
+            "key": "x-criminalip-banner.longitude",
+            "object": "banner"
+        },
+        "org_name": {
+            "key": "x-criminalip-banner.org_name",
+            "object": "banner"
+        },
+        "cloud_source": {
+            "key": "x-criminalip-banner.cloud_provider",
+            "object": "banner"
+        },
+        "socket_type": {
+            "key": "x-criminalip-banner.socket_type",
+            "object": "banner"
+        },
+        "service_name": {
+            "key": "x-criminalip-banner.service_name",
+            "object": "banner"
+        },
+        "status_code": {
+            "key": "x-criminalip-banner.status_code",
+            "object": "banner"
+        },
+        "title": {
+            "key": "x-criminalip-banner.title",
+            "object": "banner"
+        },
+        "banner": {
+            "key": "x-criminalip-banner.banner",
+            "object": "banner"
+        },
+        "jarm": {
+            "key": "x-criminalip-banner.jarm",
+            "object": "banner"
+        },
+        "has_cve": {
+            "key": "x-criminalip-banner.has_cve",
+            "object": "banner"
+        },
+        "tags": {
+            "key": "x-criminalip-banner.tags",
+            "object": "banner"
+        },
+        "tech_stacks": {
+            "key": "x-criminalip-banner.tech_stacks",
+            "object": "banner"
+        },
+        "ssl_expired": {
+            "key": "x-criminalip-banner.ssl_expired",
+            "object": "banner"
+        },
+        "as_name": {
+            "key": "x-criminalip-banner.as_name",
+            "object": "banner"
+        }
+    }
+}

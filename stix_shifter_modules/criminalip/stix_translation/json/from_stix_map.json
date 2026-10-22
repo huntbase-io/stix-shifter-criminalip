@@ -1,0 +1,77 @@
+{
+    "ipv4-addr": {
+        "fields": {
+            "value": ["ip"]
+        }
+    },
+    "network-traffic": {
+        "fields": {
+            "dst_port": ["port"],
+            "protocols[*]": ["service"],
+            "dst_ref.value": ["ip"]
+        }
+    },
+    "domain-name": {
+        "fields": {
+            "value": ["hostname", "domain_from_banner"]
+        }
+    },
+    "x509-certificate": {
+        "fields": {
+            "subject": ["ssl_subject_common_name"],
+            "issuer": ["ssl_issuer_organization"]
+        }
+    },
+    "software": {
+        "fields": {
+            "name": ["product"],
+            "version": ["product_version"]
+        }
+    },
+    "autonomous-system": {
+        "fields": {
+            "name": ["as_name"]
+        }
+    },
+    "x-oca-geo": {
+        "fields": {
+            "country_iso_code": ["country"],
+            "city_name": ["city"]
+        }
+    },
+    "vulnerability": {
+        "fields": {
+            "name": ["cve_id"]
+        }
+    },
+    "file": {
+        "fields": {
+            "hashes.MD5": ["malcode_md5"],
+            "hashes.'MD5'": ["malcode_md5"]
+        }
+    },
+    "x-criminalip-banner": {
+        "fields": {
+            "country": ["country"],
+            "city": ["city"],
+            "org_name": ["org"],
+            "isp": ["isp"],
+            "cloud_provider": ["cloud_provider"],
+            "title": ["title"],
+            "status_code": ["status_code"],
+            "jarm": ["jarm"],
+            "favicon": ["favicon"],
+            "tags[*]": ["tag"],
+            "tech_stacks[*]": ["tech_stack"],
+            "ssl_expired": ["ssl_expired"],
+            "cve_id": ["cve_id"],
+            "snort_classification": ["snort_classification"],
+            "snort_rule": ["snort_rule"],
+            "html_meta_title": ["html_meta_title"],
+            "html_meta_author": ["html_meta_author"],
+            "html_meta_description": ["html_meta_description"],
+            "html_meta_keywords": ["html_meta_keywords"],
+            "prefix": ["prefix"]
+        }
+    }
+}
