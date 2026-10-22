@@ -1,0 +1,112 @@
+# stix-shifter Criminal IP connector
+
+A [stix-shifter](https://github.com/opencybersecurityalliance/stix-shifter) connector for the
+[Criminal IP](https://www.criminalip.io) threat-intelligence API, maintained by [Huntbase](https://huntbase.io).
+It translates STIX patterns into Criminal IP **banner search** queries (`/v2/banner/search`) and turns the
+matching banners (IP, port, service, software, TLS certificate, geo and so on) into STIX `observed-data`.
+
+The connector lives in `stix_shifter_modules/criminalip/` and follows the stix-shifter module layout exactly, so
+it can be copied into a stix-shifter tree unchanged (for example, for an upstream pull request).
+
+```
+stix_shifter_modules/criminalip/
+├── configuration/          config.json, lang_en.json
+├── stix_translation/       query_constructor.py, query_translator.py, results_translator.py, post_filter.py
+│   └── json/               from_stix_map.json, to_stix_map.json, operators.json
+├── stix_transmission/      api_client.py, connector.py, error_mapper.py
+├── tests/                  unit tests (translation + mocked transmission)
+├── entry_point.py
+├── README.md               connector documentation (translation rules, examples, limitations)
+└── criminalip_supported_stix.md
+```
+
+For the full connector documentation (mapping rules, query quirks, pagination, error codes and limitations),
+see [stix_shifter_modules/criminalip/README.md](stix_shifter_modules/criminalip/README.md).
+
+## Install into stix-shifter
+
+```bash
+git clone https://github.com/opencybersecurityalliance/stix-shifter.git
+cd stix-shifter
+python3 -m venv .venv && . .venv/bin/activate
+python generate_requirements.py && pip install -r requirements-dev.txt
+
+# link (development) or copy (packaging / upstream PR) the module into the checkout
+/path/to/stix-shifter-criminalip/scripts/install_into_stix_shifter.sh .          # symlink
+/path/to/stix-shifter-criminalip/scripts/install_into_stix_shifter.sh --copy .   # copy
+```
+
+The connector has no extra Python dependencies beyond stix-shifter's own.
+
+To package it as a wheel the way stix-shifter does (run inside the stix-shifter checkout, after a `--copy` install):
+
+```bash
+MODE='criminalip' VERSION='1.0.0' python -m build_tools.run_build
+```
+
+## Use
+
+Keep the key out of files and shell history. For example, export it from a `.env` file that git ignores:
+
+```bash
+set -a; . ./.env; set +a          # defines API_KEY
+CONN='{"host":"api.criminalip.io","port":443,"options":{"result_limit":100,"max_api_calls":10}}'
+AUTH="{\"auth\":{\"api_key\":\"$API_KEY\"}}"
+IDENTITY='{"type":"identity","id":"identity--f431f809-377b-45e0-aa1c-6a4751cae5ff","name":"criminalip","identity_class":"system"}'
+```
+
+Translate a STIX pattern into Criminal IP queries (no API call):
+
+```bash
+python main.py translate criminalip query '{}' \
+  "[software:name = 'OpenSSH' AND network-traffic:dst_port = 22 AND x-oca-geo:country_iso_code = 'KR']"
+# {"queries": ["country: KR port: 22 product: OpenSSH"]}
+
+python main.py translate criminalip query '{}' "[ipv4-addr:value ISSUBSET '8.8.8.0/24' AND network-traffic:dst_port IN (80, 443)]"
+# {"queries": ["ip: 8.8.8.0/24 port: 80 OR ip: 8.8.8.0/24 port: 443"]}
+```
+
+Transmit (ping, then fetch raw results for a query at offset 0, length 10):
+
+```bash
+python main.py transmit criminalip "$CONN" "$AUTH" ping
+python main.py transmit criminalip "$CONN" "$AUTH" results "ip: 8.8.8.0/24" 0 10
+```
+
+Execute (translate, query, and convert the results into a STIX bundle):
+
+```bash
+python main.py execute criminalip criminalip "$IDENTITY" "$CONN" "$AUTH" \
+  "[ipv4-addr:value = '8.8.8.0/24' AND network-traffic:dst_port = 443]" -r 10
+```
+
+Translate raw Criminal IP banner records into STIX (no API call):
+
+```bash
+python main.py translate criminalip results "$IDENTITY" "$(jq -c '.data.result' banner_search_response.json)"
+```
+
+### Connection options
+
+| Option | Default | Meaning |
+|--|--|--|
+| `host` / `port` | `api.criminalip.io` / `443` | API endpoint |
+| `options.result_limit` | `100` | Maximum records returned per query (Criminal IP stops at 10,000) |
+| `options.max_api_calls` | `10` | Maximum banner-search calls for one results request. Each call returns 10 records and costs credits. |
+| `options.timeout` | `30` | Seconds per HTTP call |
+
+## Develop and test
+
+```bash
+cd /path/to/stix-shifter            # with the module installed as above
+python -m pytest stix_shifter_modules/criminalip -q
+python -m pytest tests/utils -q     # stix-shifter config/lang validation across all modules
+flake8 stix_shifter_modules/criminalip --max-line-length=127
+python map_validator/validate_mapping.py stix_shifter_modules/criminalip/stix_translation/json/to_stix_map.json
+```
+
+The unit tests use trimmed real Criminal IP responses (`tests/*/sample_responses/`) and make no network calls.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
