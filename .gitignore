@@ -1,0 +1,22 @@
+# secrets and confidential material
+.env
+.env.*
+*.pdf
+
+# virtual environments
+venv/
+.venv/
+env/
+virtualenv*/
+
+# caches / build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.DS_Store
