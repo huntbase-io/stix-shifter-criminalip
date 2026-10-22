@@ -33,6 +33,11 @@ def _present(value):
     return True
 
 
+def _scalar(value):
+    """True for a present string/number value (not a list, dict or bool)."""
+    return _present(value) and isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
 def to_iso(naive):
     """'2026-10-22 07:20:04' -> '2026-10-22T07:20:04.000Z' (Criminal IP timestamps are UTC without a zone)."""
     if not _present(naive):
@@ -113,9 +118,9 @@ def _software_list(record):
     seen = set()
     for entry in entries:
         name = entry.get("product")
-        if not _present(name):
+        if not _scalar(name):
             continue
-        version = entry.get("version") if _present(entry.get("version")) else None
+        version = entry.get("version") if _scalar(entry.get("version")) else None
         if (name, version) in seen:
             continue
         seen.add((name, version))
@@ -130,20 +135,26 @@ def normalize_record(record):
     if not isinstance(record, dict):
         return record
     out = {}
-    if _present(record.get("ip_address")):
-        out["ip_address"] = record["ip_address"]
-    if _present(record.get("open_port_no")):
-        out["open_port_no"] = record["open_port_no"]
-    protocols = []
-    for key in ("socket_type", "service_name"):
-        if _present(record.get(key)):
-            proto = str(record[key]).strip().lower()
-            if proto not in protocols:
-                protocols.append(proto)
-    if protocols:
-        out["protocols"] = protocols
-    if _present(record.get("hostname")):
-        out["hostname"] = record["hostname"]
+    ip = record.get("ip_address")
+    if isinstance(ip, str) and _present(ip):
+        out["ip_address"] = ip.strip()
+        # network-traffic needs dst_ref (the IP) and, in STIX 2.0, protocols, so it is only built with an IP.
+        protocols = []
+        for key in ("socket_type", "service_name"):
+            if _scalar(record.get(key)):
+                proto = str(record[key]).strip().lower()
+                if proto not in protocols:
+                    protocols.append(proto)
+        port = record.get("open_port_no")
+        if _scalar(port) and str(port).strip().isdigit():
+            out["open_port_no"] = int(str(port).strip())
+            if not protocols:
+                protocols = ["ipv4"]   # Criminal IP is IPv4 only; the transport protocol is unknown
+        if protocols:
+            out["protocols"] = protocols
+        if _scalar(record.get("hostname")):
+            # domain-name.resolves_to_refs points at the IP, so the hostname is only kept with an IP.
+            out["hostname"] = str(record["hostname"])
     software = _software_list(record)
     if software:
         out["software"] = software

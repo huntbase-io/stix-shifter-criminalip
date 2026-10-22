@@ -124,3 +124,42 @@ class TestCriminalIPJsonToStix(unittest.TestCase):
             DATA_SOURCE, translator.map_data, [normalize_record(load_results("v2_banner_search_openssh_kr.json")[0])],
             transformers, {})
         assert result["objects"][1]["objects"]["0"]["type"] == "ipv4-addr"
+
+    def test_mutilated_records_give_valid_network_traffic(self):
+        # STIX 2.0: network-traffic needs protocols and a src_ref/dst_ref; values must have the right type
+        base = load_results("v2_banner_search_openssh_kr.json")[0]
+        variants = []
+        for key in ("ip_address", "socket_type", "service_name", "open_port_no", "hostname"):
+            for bad in (None, "", [], {"x": 1}, 12345):
+                record = dict(base)
+                record[key] = bad
+                variants.append(record)
+        record = dict(base)
+        record.pop("socket_type")
+        record.pop("service_name")
+        variants.append(record)
+        for record in variants:
+            bundle = to_bundle([record])
+            assert "objects" in bundle, (record, bundle)
+            for observed in bundle["objects"][1:]:
+                by_type = objects_by_type(observed)
+                for nt in by_type.get("network-traffic", []):
+                    assert nt.get("protocols"), (record, nt)
+                    assert observed["objects"][nt["dst_ref"]]["type"] == "ipv4-addr", (record, nt)
+                for domain in by_type.get("domain-name", []):
+                    assert isinstance(domain["value"], str), (record, domain)
+                for ip in by_type.get("ipv4-addr", []):
+                    assert isinstance(ip["value"], str), (record, ip)
+
+    def test_port_without_socket_type_defaults_protocol(self):
+        record = dict(load_results("v2_banner_search_openssh_kr.json")[0])
+        record.pop("socket_type")
+        record.pop("service_name")
+        nt = objects_by_type(to_bundle([record])["objects"][1])["network-traffic"][0]
+        assert nt["protocols"] == ["ipv4"]
+        assert nt["dst_port"] == 22
+
+    def test_v1_product_of_wrong_type_does_not_crash(self):
+        record = dict(load_results("v1_banner_search_openssh_kr.json")[0])
+        record["product"] = {"x": 1}
+        assert "objects" in to_bundle([record])
