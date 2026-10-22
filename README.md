@@ -2,8 +2,10 @@
 
 A [stix-shifter](https://github.com/opencybersecurityalliance/stix-shifter) connector for the
 [Criminal IP](https://www.criminalip.io) threat-intelligence API, maintained by [Huntbase](https://huntbase.io).
-It translates STIX patterns into Criminal IP **banner search** queries (`/v2/banner/search`) and turns the
-matching banners (IP, port, service, software, TLS certificate, geo and so on) into STIX `observed-data`.
+It translates STIX patterns into Criminal IP **banner search** queries (`/v2/banner/search`), or into IP report /
+domain verdict lookups for exact IPs and domains, and turns the results (IP, ASN, port, service, software, TLS
+certificate, CVEs, threat scores, geo and so on) into STIX `observed-data`. Native Criminal IP queries can be passed
+through as well.
 
 The connector lives in `stix_shifter_modules/criminalip/` and follows the stix-shifter module layout exactly, so
 it can be copied into a stix-shifter tree unchanged (for example, for an upstream pull request).
@@ -81,6 +83,31 @@ python main.py execute criminalip criminalip "$IDENTITY" "$CONN" "$AUTH" \
   "[ipv4-addr:value = '8.8.8.0/24' AND network-traffic:dst_port = 443]" -r 10
 ```
 
+Exact IPv4 addresses and domain names are answered by Criminal IP's lookup endpoints (IP report with ASN, scores,
+open ports and CVEs; domain verdicts) instead of banner search. Domain scans are never started:
+
+```bash
+python main.py translate criminalip query '{}' "[ipv4-addr:value IN ('185.220.101.1', '34.22.91.145')]"
+# {"queries": ["{\"lookup\": \"ip\", \"values\": [\"185.220.101.1\", \"34.22.91.145\"]}"]}
+python main.py execute criminalip criminalip "$IDENTITY" "$CONN" "$AUTH" "[domain-name:value = 'google.com']"
+```
+
+### Criminal IP query passthrough
+
+Native Criminal IP banner search queries can be passed through unchanged with the `{"language": "criminalip"}`
+option (like QRadar's AQL passthrough). Translation only warns about unknown filter names, `after:` and quoted filter
+values, which Criminal IP silently answers with nothing:
+
+```bash
+python main.py translate criminalip query '{}' "product: OpenSSH port: 22 country: KR" '{"language":"criminalip"}'
+# {"queries": ["product: OpenSSH port: 22 country: KR"]}
+python main.py transmit criminalip "$CONN" "$AUTH" results "product: OpenSSH port: 22 country: KR" 0 10
+python main.py execute criminalip criminalip "$IDENTITY" \
+  '{"host":"api.criminalip.io","port":443,"options":{"language":"criminalip"}}' "$AUTH" "product: OpenSSH port: 22 country: KR"
+```
+
+### Translate raw results
+
 Translate raw Criminal IP banner records into STIX (no API call):
 
 ```bash
@@ -93,7 +120,7 @@ python main.py translate criminalip results "$IDENTITY" "$(jq -c '.data.result' 
 |--|--|--|
 | `host` / `port` | `api.criminalip.io` / `443` | API endpoint |
 | `options.result_limit` | `100` | Maximum records returned per query (Criminal IP stops at 10,000) |
-| `options.max_api_calls` | `10` | Maximum banner-search calls for one results request. Each call returns 10 records and costs credits. |
+| `options.max_api_calls` | `10` | Maximum Criminal IP calls for one results request (banner search: 10 records per call; IP lookup: 2 calls per IP; domain lookup: 1–2 calls per domain). Every call costs credits. |
 | `options.timeout` | `30` | Seconds per HTTP call |
 
 ## Develop and test

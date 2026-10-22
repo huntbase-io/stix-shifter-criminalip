@@ -4,6 +4,8 @@
 
 - [Criminal IP API Endpoints](#criminal-ip-api-endpoints)
 - [How patterns are translated](#how-patterns-are-translated)
+- [IP and domain lookups](#ip-and-domain-lookups)
+- [Criminal IP query passthrough](#criminal-ip-query-passthrough)
 - [Pattern expression with STIX attributes - Single Observation](#single-observation)
 - [Pattern expression with STIX attributes - Multiple Observations](#multiple-observations)
 - [STIX Execute Query](#stix-execute-query)
@@ -15,7 +17,10 @@
 [Criminal IP](https://www.criminalip.io) is an internet-exposure and threat-intelligence search engine. This
 synchronous connector runs STIX patterns against the Criminal IP **banner search** (`GET /v2/banner/search`).
 Each returned banner (one service on one IP:port, as last seen by the Criminal IP scanners) becomes one STIX
-`observed-data` object.
+`observed-data` object. Patterns that only ask for exact IPv4 addresses or domain names are answered by the
+Criminal IP **IP report** and **domain verdict** lookups instead (see [IP and domain lookups](#ip-and-domain-lookups)),
+and native Criminal IP queries can be passed through unchanged (see
+[Criminal IP query passthrough](#criminal-ip-query-passthrough)).
 
 Supported STIX objects, properties and operators are listed in [criminalip_supported_stix.md](criminalip_supported_stix.md).
 
@@ -24,7 +29,9 @@ Supported STIX objects, properties and operators are listed in [criminalip_suppo
 | Connector Method | Criminal IP API Endpoint | Method |
 |--|--|--|
 | Ping | `https://api.criminalip.io/v1/user/me` | POST (empty body) |
-| Results | `https://api.criminalip.io/v2/banner/search?query=<query>&offset=<n>` | GET |
+| Results (search) | `https://api.criminalip.io/v2/banner/search?query=<query>&offset=<n>` | GET |
+| Results (IP lookup) | `https://api.criminalip.io/v2/asset/ip/report?ip=<ip>` and `/v1/asset/ip/report/summary?ip=<ip>` | GET |
+| Results (domain lookup) | `https://api.criminalip.io/v1/domain/quick/hash/view?domain=<d>` (+ `/v1/domain/quick/malicious/view` when the verdict is not "safe") | GET |
 
 Authentication uses the `x-api-key` header. Ping uses `/v1/user/me` because it is cheap, authenticated and has no
 threat-data side effects. Its response echoes the API key, so the connector never logs or returns that response.
@@ -36,7 +43,7 @@ threat-data side effects. Its response echoes the API key, so the connector neve
 | `host` | `api.criminalip.io` | |
 | `port` | `443` | |
 | `options.result_limit` | `100` | Maximum records per query. Criminal IP itself stops at 10,000. |
-| `options.max_api_calls` | `10` | Maximum banner-search calls for one `results` request. Each call returns 10 records and costs credits. |
+| `options.max_api_calls` | `10` | Maximum Criminal IP calls for one `results` request. A banner-search call returns 10 records; an IP lookup costs 2 calls per IP and a domain lookup 1–2 calls per domain. Every call costs credits. |
 | `options.timeout` | `30` | Seconds per HTTP call |
 | `configuration.auth.api_key` | | Criminal IP API key |
 
@@ -62,13 +69,98 @@ Otherwise translation fails with `mapping_error` or `invalid_parameter`.
 When there is no `START`/`STOP` qualifier, **no default time window is applied**. Criminal IP holds scan data
 collected over days and weeks, so the usual "last *N* minutes" default would always return nothing.
 
-**Query format.** Each entry of `queries` is either:
-- a plain Criminal IP query string, which can be pasted into the Criminal IP UI; or
-- a JSON string of the form `{"query": "<criminal ip query>", "post_filter": {...}}`. This form is used when client-side checks
-  are needed (a time window or a multi-word phrase).
+**Query format.** Each entry of `queries` is one of:
+- a plain Criminal IP query string, which can be pasted into the Criminal IP UI;
+- a JSON string `{"query": "<criminal ip query>", "post_filter": {"any": [...]}}`, used when client-side checks are
+  needed (a time window or a multi-word phrase);
+- a lookup envelope `{"lookup": "ip", "values": [...]}` or `{"lookup": "domain", "values": [...]}`.
 
-AND-groups that need different client-side checks become separate queries. Each query is executed independently,
-and the results are concatenated.
+A STIX pattern that goes to banner search always becomes **one** query, so results never overlap. When client-side
+checks are needed, `post_filter.any` holds one group per OR-branch: the branch's time window and phrase checks, plus
+the branch's server conditions that can be re-checked on a banner record (`ip` by CIDR, `port`, `service`,
+`product`, `country`, `as_name`, `title` and so on). A record is kept when **any** group matches, so a record
+returned because of one branch is never let through by another branch's checks. Conditions that cannot be
+re-checked on a banner record (`cve_id`, `domain_from_banner`, `isp`, `malcode_md5`, ...) are left to the server.
+
+### IP and domain lookups
+
+When a pattern only asks for exact values joined by `OR` (between comparisons or observations), the connector
+uses Criminal IP's lookup endpoints instead of banner search:
+
+| Pattern | Query | Calls per value | Endpoints |
+|--|--|--|--|
+| `[ipv4-addr:value = '1.2.3.4']`, `[ipv4-addr:value IN ('1.2.3.4', '5.6.7.8')]` | `{"lookup": "ip", "values": [...]}` | 2 | `/v2/asset/ip/report` + `/v1/asset/ip/report/summary` |
+| `[domain-name:value = 'example.com']`, `IN (...)` | `{"lookup": "domain", "values": [...]}` | 1 (2 if not "safe") | `/v1/domain/quick/hash/view` (+ `/malicious/view`) |
+
+- A pattern with both IPs and domains (e.g. `[ipv4-addr:value = 'x'] OR [domain-name:value = 'y']`) yields one
+  query of each kind.
+- CIDR values, `!=`/`NOT`, `ISSUBSET`, and any other condition (e.g. `AND network-traffic:dst_port = 22`) keep using
+  banner search.
+- `START`/`STOP` qualifiers do not apply to lookups: they return Criminal IP's current knowledge of the value.
+- **Domain scans are never started.** The quick views are synchronous database lookups; a domain Criminal IP has no
+  data for produces no observation.
+- `/v2/asset/ip/report` is called without `full=true`, so each section (ports, CVEs, categories) holds at most 20
+  items. `full=true` returns 100–200 KB per popular IP and was left out on purpose.
+- Fan-out is bounded by `max_api_calls`: with the default of 10, one `results` call looks up at most 5 IPs. The
+  `metadata` returned (`{"value_offset": n}`) resumes with the next value. For lookups, `offset`/`length` count
+  looked-up **values**, and one IP can produce several observations (one per open port plus a summary).
+- If the report summary is temporarily unavailable (e.g. a Cloudflare 522), the IP report is still returned without
+  the `is_malicious` verdict.
+
+Lookup results map to STIX as follows:
+- **IP summary observation**: `ipv4-addr`, `autonomous-system` with `number` and `name` (from `whois.as_no`; linked by
+  `ipv4-addr.belongs_to_refs`), `x-oca-geo` (country, city, region), `domain-name` (PTR hostname),
+  `x-criminalip-vulnerability` objects (one per CVE: `cve_id`, CVSS v3/v2 scores, app name/version, vendor,
+  description), and `x-criminalip-ip` (`inbound_score`, `outbound_score`, `is_malicious`, `is_vpn`, `is_proxy`,
+  `is_tor`, `is_hosting`, `is_cloud`, `is_mobile`, `is_darkweb`, `is_scanner`, `is_snort`, `is_anonymous_vpn`,
+  `is_cdn`, `categories`, `ids_classifications`, `issues`, `abuse_record_count`, ...). `first_observed` is the report
+  time.
+- **One observation per open port** (`port.data[]`), shaped like a banner result: `ipv4-addr`, `network-traffic`,
+  `software` (products and operating systems), `x509-certificate` when TLS details are present, `x-oca-geo`, and
+  `x-criminalip-banner`. `first_observed` is the port's `confirmed_time`.
+- **Domain observation**: `domain-name` and `x-criminalip-domain` (`verdict`, `domain_type`, `malicious_type`,
+  `call_count`, `first_seen`).
+
+CVEs use a custom object rather than STIX `vulnerability`, because `vulnerability` is a STIX Domain Object and
+cannot be placed inside `observed-data` (other stix-shifter connectors do the same, e.g. `x-splunk-vulnerability`,
+`x-ibm-finding`).
+
+### Criminal IP query passthrough
+
+Like QRadar's AQL passthrough, the connector accepts native Criminal IP banner search queries with the
+`{"language": "criminalip"}` option. The query is returned unchanged (surrounding whitespace is stripped and runs of
+whitespace outside double-quoted phrases are collapsed), transmission sends it to `/v2/banner/search`, and results
+are translated to STIX as usual.
+
+```shell
+python main.py translate criminalip query '{}' "product: OpenSSH port: 22 country: KR" '{"language":"criminalip"}'
+```
+```json
+{
+    "queries": [
+        "product: OpenSSH port: 22 country: KR"
+    ]
+}
+```
+
+```shell
+python main.py transmit criminalip '{"host":"api.criminalip.io","port":443}' '{"auth":{"api_key":"<API KEY>"}}' results "product: OpenSSH port: 22 country: KR" 0 10
+python main.py execute criminalip criminalip '<identity>' '{"host":"api.criminalip.io","port":443,"options":{"language":"criminalip"}}' '{"auth":{"api_key":"<API KEY>"}}' "product: OpenSSH port: 22 country: KR"
+```
+
+Translation makes no network calls. It rejects an empty query and logs a warning (the query is still returned) for:
+- filter names that are not documented banner-search filters (Criminal IP silently turns them into keywords, e.g.
+  `service_name:` instead of `service:`);
+- `after:`, which always returns 0 results;
+- quoted filter values such as `title: "Plesk Obsidian"`, which match nothing (quotes only work for keyword phrases).
+
+A Criminal IP query never starts with `{`. A passthrough query that does is accepted only if it is one of the
+connector's JSON envelopes, otherwise translation fails with `mapping_error`, so it can never be misread. This also
+gives a native form for lookups:
+
+```shell
+python main.py translate criminalip query '{}' '{"lookup": "ip", "values": ["185.220.101.1"]}' '{"language":"criminalip"}'
+```
 
 ### Format for calling stix-shifter from the command line
 ```
@@ -111,7 +203,7 @@ python main.py translate criminalip query '{}' "[software:name = 'Plesk Obsidian
 ```json
 {
     "queries": [
-        "{\"post_filter\": {\"start\": \"2026-10-01T00:00:00Z\", \"stop\": \"2026-10-22T00:00:00Z\", \"terms\": [{\"field\": \"software.product\", \"negate\": false, \"value\": \"Plesk Obsidian\"}]}, \"query\": \"port: 8443 product: Obsidian before: 2026-10-23\"}"
+        "{\"post_filter\": {\"any\": [{\"start\": \"2026-10-01T00:00:00Z\", \"stop\": \"2026-10-22T00:00:00Z\", \"terms\": [{\"field\": \"open_port_no\", \"match\": \"equals\", \"negate\": false, \"value\": \"8443\"}, {\"field\": \"software.product\", \"match\": \"contains\", \"negate\": false, \"value\": \"Plesk Obsidian\"}]}]}, \"query\": \"port: 8443 product: Obsidian before: 2026-10-23\"}"
     ]
 }
 ```
@@ -195,8 +287,9 @@ python main.py execute criminalip criminalip '{"type":"identity","id":"identity-
 | `scan_dtime` (UTC) | `first_observed`, `last_observed` |
 | `as_name`, `org_name`, `cloud_source`, `title`, `status_code`, `banner`, `jarm`, `tags`, `tech_stacks`, `has_cve`, `ssl_expired`, `latitude`, `longitude` | `x-criminalip-banner` custom object |
 
-`as_name` goes into the custom object, not into `autonomous-system`, because the STIX `autonomous-system`
-object requires `number`, and banner search does not return the ASN number.
+For banner results, `as_name` goes into the custom object, not into `autonomous-system`, because the STIX
+`autonomous-system` object requires `number`, and banner search does not return the ASN number. IP lookups do return
+it, so their observations contain a proper `autonomous-system` object.
 
 ### Pagination and API credits
 
@@ -229,16 +322,18 @@ Criminal IP usually reports errors with HTTP 200 and a `status` field in the bod
 
 ### Limitations
 
-- Only banner search is queried. IP reports, domain scans and exploit search are not part of this connector.
+- Domain scans and exploit search are not part of this connector. Domain lookups use the quick verdict views only.
 - Filter matching is Criminal IP's own term matching, not strict STIX equality. For example, `as_name: Google`
   matches `Google LLC`.
 - Equality only: there are no ranges, wildcards, `LIKE` or `MATCHES`.
 - IPv4 only.
-- There is no filter for `autonomous-system:number`, `software:vendor` or the certificate serial/validity, so these are
-  unmapped.
-- CVE IDs are not part of banner results (only the `has_cve` flag). `vulnerability:name` can be searched on, but it
-  is not returned.
-- Results from separate queries (for example, AND-groups with different client-side checks) may overlap.
+- There is no banner-search filter for `autonomous-system:number` (`as_no:`, `asn:` and `as_number:` were tested live and
+  are all treated as keywords), `software:vendor` or the certificate serial/validity, so these are unmapped.
+- CVE IDs are not part of banner results (only the `has_cve` flag); they are returned by IP lookups. In banner search,
+  `vulnerability:name` can be searched on, but the CVE is not returned.
+- Client-side re-checks use simple matching (case-insensitive substring, exact for ports/codes, CIDR for IPs), which can
+  be stricter than Criminal IP's own term matching in rare cases.
+- An IP lookup and a domain lookup from the same pattern are separate queries and may describe the same host.
 
 ### References
 - [Criminal IP](https://www.criminalip.io)
