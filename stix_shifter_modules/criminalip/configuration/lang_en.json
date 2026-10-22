@@ -1,0 +1,38 @@
+{
+    "connection": {
+        "host": {
+            "label": "Management IP address or hostname",
+            "description": "Specify the IP address or hostname of the data source"
+        },
+        "port": {
+            "label": "Host port",
+            "description": "Set the port number that is associated with the hostname or IP address"
+        },
+        "help": {
+            "label": "Need additional help?",
+            "description": "More details on the data source setting can be found in the specified link"
+        },
+        "options": {
+            "result_limit": {
+                "label": "Result size limit",
+                "description": "The maximum number of banner records returned by a search. Criminal IP returns 10 records per API call and allows at most 10,000 records per query. Valid input range is {{min}} to {{max}}."
+            },
+            "timeout": {
+                "label": "Query response timeout limit",
+                "description": "The limit on how long to wait for the data source response, in seconds. Valid input range is {{min}} to {{max}}."
+            },
+            "max_api_calls": {
+                "label": "Maximum API calls per results request",
+                "description": "Upper bound on the number of Criminal IP banner search calls made for one results request (each call returns up to 10 records and consumes credits). Valid input range is {{min}} to {{max}}."
+            }
+        }
+    },
+    "configuration": {
+        "auth": {
+            "api_key": {
+                "label": "API key",
+                "description": "Criminal IP API key, sent in the x-api-key header"
+            }
+        }
+    }
+}

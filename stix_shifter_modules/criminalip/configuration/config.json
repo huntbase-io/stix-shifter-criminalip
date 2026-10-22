@@ -1,0 +1,65 @@
+{
+    "connection": {
+        "type": {
+            "displayName": "Criminal IP",
+            "description": "Search Criminal IP internet-exposure and threat intelligence data (banner search) with STIX patterns.",
+            "group": "criminalip"
+        },
+        "host": {
+            "type": "text",
+            "regex": "^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9_:/\\-]*[a-zA-Z0-9])\\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9_:/\\-]*[A-Za-z0-9])$",
+            "default": "api.criminalip.io"
+        },
+        "port": {
+            "type": "number",
+            "default": 443,
+            "min": 1,
+            "max": 65535
+        },
+        "help": {
+            "type": "link",
+            "default": "data-sources.html"
+        },
+        "options": {
+            "type": "fields",
+            "result_limit": {
+                "default": 100,
+                "min": 1,
+                "max": 10000,
+                "type": "number",
+                "previous": "connection.resultSizeLimit"
+            },
+            "time_range": {
+                "default": 5,
+                "min": 1,
+                "max": 10000,
+                "type": "number",
+                "previous": "connection.timerange",
+                "nullable": true,
+                "hidden": true
+            },
+            "timeout": {
+                "default": 30,
+                "min": 1,
+                "max": 600,
+                "type": "number",
+                "previous": "connection.timeoutLimit"
+            },
+            "max_api_calls": {
+                "default": 10,
+                "min": 1,
+                "max": 1000,
+                "type": "number",
+                "optional": true
+            }
+        }
+    },
+    "configuration": {
+        "auth": {
+            "type": "fields",
+            "api_key": {
+                "type": "password"
+            }
+        }
+    }
+}
