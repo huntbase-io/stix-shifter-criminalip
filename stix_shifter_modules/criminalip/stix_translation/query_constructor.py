@@ -53,9 +53,29 @@ DN_ATTRIBUTE_FILTERS = {
                                 "C": "ssl_subject_country"},
     "ssl_issuer_organization": {"O": "ssl_issuer_organization"},
 }
-# Words the Criminal IP query parser treats as operators. A value (or the token picked from a multi-word value)
-# equal to one of these would change the query structure, e.g. 'title: OR' splits the query into two groups.
+# Filter values reach a Lucene-style query parser on the Criminal IP side (verified live):
+# * 'title: OR' fails with "parse_exception: Encountered <OR>"; AND/NOT are operators too;
+# * 'title: Obsidi*' is a wildcard search (39k hits), so '*' and '?' widen an equality match;
+# * 'title: a(b' fails with a parse_exception; a backslash escape trips the Cloudflare WAF (HTTP 403 challenge).
+# A colon inside a value is fine ('title: port:22' parses as one value). So a value is only sent as-is when it is
+# a single token without these characters. Otherwise the longest safe fragment is sent and the full value is
+# checked client side (post_filter), or the pattern is rejected when that is not possible.
 QUERY_OPERATOR_WORDS = {"OR", "AND", "NOT"}
+UNSAFE_VALUE_SPLIT = re.compile(r'[\s(){}\[\]^"~*?\\!]+|&&|\|\|')
+UNSAFE_TOKEN_PREFIX = "+-/"
+
+
+def _is_safe_token(token):
+    if token == "" or token.upper() in QUERY_OPERATOR_WORDS or token[0] in UNSAFE_TOKEN_PREFIX:
+        return False
+    return UNSAFE_VALUE_SPLIT.search(token) is None
+
+
+def _safe_fragments(value):
+    fragments = (f.lstrip(UNSAFE_TOKEN_PREFIX) for f in UNSAFE_VALUE_SPLIT.split(value))
+    return [f for f in fragments if _is_safe_token(f)]
+
+
 SUPPORTED_COMPARATORS = {ComparisonComparators.Equal, ComparisonComparators.NotEqual, ComparisonComparators.In,
                          ComparisonComparators.IsSubSet}
 
@@ -158,27 +178,22 @@ class QueryStringPatternTranslator:
 
     def _value_tree(self, field, value, negate):
         """DNF for a single 'field = value' (negated when negate is True)."""
-        if not any(c.isspace() for c in value):
-            if value.upper() in QUERY_OPERATOR_WORDS:
-                raise SearchFeatureNotSupportedError(
-                    "'{}' is a Criminal IP query operator and cannot be searched as a value of '{}'"
-                    .format(value, field))
+        if _is_safe_token(value):
             return _term("s", field, value, negate)
         result_field = FILTER_RESULT_FIELDS.get(field)
         if not result_field:
             raise SearchFeatureNotSupportedError(
-                "Criminal IP filter values cannot contain spaces and '{}' cannot be verified client side: '{}'"
-                .format(field, value))
+                "Criminal IP cannot search '{}' for a value with spaces, operator words (OR/AND/NOT) or query "
+                "syntax characters, and the value cannot be verified client side: '{}'".format(field, value))
         phrase = " ".join(value.split())
         if negate:
             # 'NOT field: token' would also drop unrelated records, so only the client side check is used.
             return _term("p", result_field, phrase, True)
-        tokens = [t for t in phrase.split(" ") if t.upper() not in QUERY_OPERATOR_WORDS]
-        if not tokens:
+        fragments = _safe_fragments(phrase)
+        if not fragments:
             raise SearchFeatureNotSupportedError(
-                "'{}' contains only Criminal IP query operators and cannot be searched".format(value))
-        # Never send an operator word as the server-side token: 'title: OR' would split the query.
-        token = max(tokens, key=len)
+                "'{}' has no part that Criminal IP can search on (only operator words or query syntax)".format(value))
+        token = max(fragments, key=len)
         return [frozenset([("s", field, token, False), ("p", result_field, phrase, False)])]
 
     def _field_tree(self, field, raw_value, comparator, negate):

@@ -218,3 +218,36 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         query, post = parse_search_id(queries("[x-criminalip-banner:title = 'Plesk\tObsidian']")[0])
         assert query == "title: Obsidian"
         assert post["terms"][0]["value"] == "Plesk Obsidian"
+
+    def test_query_syntax_characters_never_sent(self):
+        # verified live: '*' is a wildcard, '(' is a parse error, a backslash trips the Cloudflare WAF
+        cases = {
+            "Obsidi*": ("title: Obsidi", "Obsidi*"),
+            "a(bcd": ("title: bcd", "a(bcd"),
+            "Error 404 (Not Found)!!1": ("title: Error", "Error 404 (Not Found)!!1"),
+            "C:\\\\Windows": ("title: Windows", "C:\\Windows"),
+            "-admin": ("title: admin", "-admin"),
+            "x && yy": ("title: yy", "x && yy"),
+        }
+        for value, (expected_query, expected_phrase) in cases.items():
+            query, post = parse_search_id(queries("[x-criminalip-banner:title = '{}']".format(value))[0])
+            assert query == expected_query, (value, query)
+            assert post["terms"] == [{"field": "title", "value": expected_phrase, "negate": False}], value
+
+    def test_query_syntax_without_client_side_check_rejected(self):
+        for value in ("abc*", "a(b", "?"):
+            result = translate("[x-criminalip-banner:isp = '{}']".format(value))
+            assert result['success'] is False, value
+            assert result['code'] == 'invalid_parameter'
+        assert translate("[x-criminalip-banner:title = '*?']")['success'] is False
+
+    def test_negated_query_syntax_is_client_side(self):
+        query, post = parse_search_id(queries("[network-traffic:dst_port = 443 AND "
+                                              "x-criminalip-banner:title != 'Obsidi*']")[0])
+        assert query == "port: 443"
+        assert post["terms"] == [{"field": "title", "value": "Obsidi*", "negate": True}]
+
+    def test_plain_punctuation_is_sent_unchanged(self):
+        assert queries("[domain-name:value = 'my-host.example.com']") == \
+            ["hostname: my-host.example.com OR domain_from_banner: my-host.example.com"]
+        assert queries("[software:version = '7.4p1']") == ["product_version: 7.4p1"]
