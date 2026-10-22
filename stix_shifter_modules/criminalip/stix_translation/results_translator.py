@@ -185,6 +185,195 @@ def normalize_record(record):
     return out
 
 
+# ---------------------------------------------------------------- IP and domain lookups
+RECORD_TYPE_FIELD = "criminalip_record_type"
+IP_ISSUE_FLAGS = ["is_vpn", "is_cloud", "is_tor", "is_proxy", "is_hosting", "is_mobile", "is_darkweb",
+                  "is_scanner", "is_snort", "is_anonymous_vpn"]
+MAX_DESCRIPTION = 500
+
+
+def _section(report, name):
+    section = report.get(name)
+    if isinstance(section, dict) and isinstance(section.get("data"), list):
+        return [d for d in section["data"] if isinstance(d, dict)]
+    return []
+
+
+def _unique(values):
+    out = []
+    for value in values:
+        if _present(value) and value not in out:
+            out.append(value)
+    return out
+
+
+def _float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ip_info(report, summary):
+    info = {}
+    score = report.get("score") or {}
+    scoring = summary.get("ip_scoring") or {}
+    for key in ("inbound", "outbound"):
+        value = score.get(key) or scoring.get(key)
+        if _present(value):
+            info[key + "_score"] = value
+    if isinstance(scoring.get("is_malicious"), bool):
+        info["is_malicious"] = scoring["is_malicious"]
+    issues = report.get("issues") or {}
+    for flag in IP_ISSUE_FLAGS:
+        if isinstance(issues.get(flag), bool):
+            info[flag] = issues[flag]
+    categories = _unique(c.get("type") for c in _section(report, "ip_category"))
+    if categories:
+        info["categories"] = categories
+    ids = _unique(i.get("classification") for i in _section(report, "ids"))
+    if ids:
+        info["ids_classifications"] = ids
+    if _present(summary.get("issue")):
+        info["issues"] = summary["issue"]
+    if _present(summary.get("tags")):
+        info["tags"] = summary["tags"]
+    security = (summary.get("summary") or {}).get("security") or {}
+    for src, dst in (("abuse_record", "abuse_record_count"), ("open_ports", "open_port_count"),
+                     ("vulnerabilities", "vulnerability_count")):
+        if isinstance(security.get(src), int):
+            info[dst] = security[src]
+    detection = (summary.get("summary") or {}).get("detection") or {}
+    if isinstance(detection.get("cdn_ip"), bool):
+        info["is_cdn"] = detection["cdn_ip"]
+    whois = (_section(report, "whois") or [{}])[0]
+    if _present(whois.get("org_name")):
+        info["org_name"] = whois["org_name"]
+    if _present(summary.get("summary", {}).get("connection", {}).get("representative_domain")):
+        info["representative_domain"] = summary["summary"]["connection"]["representative_domain"]
+    return info
+
+
+def _vulnerabilities(report):
+    vulns = []
+    for v in _section(report, "vulnerability"):
+        if not _present(v.get("cve_id")):
+            continue
+        item = {"cve_id": v["cve_id"]}
+        for key in ("cvssv3_score", "cvssv2_score"):
+            score = _float(v.get(key))
+            if score:
+                item[key] = score
+        for key in ("app_name", "app_version", "vendor"):
+            if _present(v.get(key)):
+                item[key] = str(v[key])
+        if _present(v.get("cve_description")):
+            item["description"] = str(v["cve_description"])[:MAX_DESCRIPTION]
+        vulns.append(item)
+    return vulns
+
+
+def expand_ip_report(report):
+    """One /v2/asset/ip/report (+ report/summary) -> an IP observation plus one observation per open port."""
+    ip = report.get("ip")
+    summary = report.get("report_summary") or {}
+    whois = (_section(report, "whois") or [{}])[0]
+    country = whois.get("org_country_code") or (summary.get("summary") or {}).get("connection", {}).get("country")
+    out = {"ip_address": ip}
+    asn = {}
+    if isinstance(whois.get("as_no"), int) and whois["as_no"] > 0:
+        asn["number"] = whois["as_no"]
+        if _present(whois.get("as_name")):
+            asn["name"] = whois["as_name"]
+        asn["link"] = True
+        out["asn"] = asn
+    geo = {}
+    if _present(country):
+        geo["country_iso_code"] = str(country).upper()
+    if _present(whois.get("city")):
+        geo["city_name"] = whois["city"]
+    if _present(whois.get("region")):
+        geo["region_name"] = whois["region"]
+    if geo:
+        out["geo"] = geo
+    hostnames = _section(report, "hostname")
+    if hostnames and _present(hostnames[0].get("domain_name_full")):
+        out["hostname"] = hostnames[0]["domain_name_full"]
+    vulns = _vulnerabilities(report)
+    if vulns:
+        out["vulnerabilities"] = vulns
+    info = _ip_info(report, summary)
+    if info:
+        info["ip_ref"] = True
+        out["ip_info"] = info
+    observed = to_iso(report.get("timestamp"))
+    if observed:
+        out["observed_time"] = observed
+    records = [out]
+
+    for port in _section(report, "port"):
+        banner_like = {
+            "ip_address": ip,
+            "open_port_no": port.get("open_port_no"),
+            "socket_type": port.get("socket"),
+            "service_name": port.get("protocol"),
+            "software": port.get("software"),
+            "operating_systems": port.get("operating_systems"),
+            "banner": port.get("banner"),
+            "tags": port.get("tags"),
+            "jarm": port.get("jarm_hash"),
+            "ssl_info": port.get("ssl_info_raw"),
+            "scan_dtime": port.get("confirmed_time"),
+            "as_name": whois.get("as_name"),
+            "country": country,
+            "city": whois.get("city"),
+        }
+        if isinstance(port.get("is_vulnerability"), bool):
+            banner_like["has_cve"] = port["is_vulnerability"]
+        if not _present(banner_like["open_port_no"]):
+            continue
+        records.append(normalize_record(banner_like))
+    return records
+
+
+def expand_domain_lookup(record):
+    """/v1/domain/quick/{hash,malicious}/view results -> one domain observation."""
+    hash_view = record.get("hash_view") or {}
+    malicious_view = record.get("malicious_view") or {}
+    domain = record.get("domain") or hash_view.get("domain")
+    out = {"domain_name": domain}
+    info = {}
+    if _present(hash_view.get("result")):
+        info["verdict"] = hash_view["result"]
+    if _present(hash_view.get("type")):
+        info["domain_type"] = hash_view["type"]
+    if _present(malicious_view.get("type")):
+        info["malicious_type"] = malicious_view["type"]
+    call_count = hash_view.get("call_count", malicious_view.get("call_count"))
+    if isinstance(call_count, int):
+        info["call_count"] = call_count
+    registered = to_iso(hash_view.get("reg_dtime") or malicious_view.get("reg_dtime"))
+    if registered:
+        info["first_seen"] = registered
+    if info:
+        info["domain_ref"] = True
+        out["domain_info"] = info
+    return [out]
+
+
+def expand_record(record):
+    """Any record returned by transmission -> list of normalized records (one per observed-data)."""
+    if not isinstance(record, dict):
+        return [record]
+    record_type = record.get(RECORD_TYPE_FIELD)
+    if record_type == "ip_report" or (record_type is None and "ip" in record and "issues" in record
+                                      and "ip_address" not in record):
+        return expand_ip_report(record)
+    if record_type == "domain_quick":
+        return expand_domain_lookup(record)
+    return [normalize_record(record)]
+
+
 class ResultsTranslator(JSONToStix):
 
     def translate_results(self, data_source, data):
@@ -193,7 +382,7 @@ class ResultsTranslator(JSONToStix):
         records = json.loads(data) if isinstance(data, str) else data
         if isinstance(records, dict):
             records = [records]
-        normalized = [normalize_record(r) for r in (records or [])]
+        normalized = [n for r in (records or []) for n in expand_record(r)]
         # A record with nothing mappable would become an observed-data with no objects, which is invalid STIX.
         normalized = [r for r in normalized if not isinstance(r, dict) or set(r) - {"observed_time"}]
         return super().translate_results(data_source, normalized)

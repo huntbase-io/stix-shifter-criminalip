@@ -1,6 +1,6 @@
-"""STIX pattern -> Criminal IP banner search query (GET /v2/banner/search ``query`` parameter).
+"""STIX pattern -> Criminal IP queries.
 
-Criminal IP query language facts (all verified live):
+Criminal IP banner search query language facts (all verified live):
 
 * ``filter: value`` terms separated by spaces are ANDed; ``NOT`` before a term negates it.
 * ``OR`` has the LOWEST precedence and splits the query into AND-groups, i.e. the server reads
@@ -11,17 +11,16 @@ Criminal IP query language facts (all verified live):
 * ``after:`` is broken (always 0 results); ``before:`` works. START/STOP qualifiers become ``before:`` plus a
   client-side ``scan_dtime`` window.
 
-Output contract with stix_transmission:
+Output contract with stix_transmission (formats are documented in post_filter.py):
 
-``translate_pattern`` returns a LIST of queries. Each one is executed independently by transmission and the
-results are concatenated. Each list item is either
+``translate_pattern`` returns a LIST of queries; each is executed independently by transmission.
 
-* a plain Criminal IP query string (no client-side filtering needed), or
-* a JSON object string ``{"query": "<criminal ip query>", "post_filter": {...}}``. Transmission must apply
-  ``post_filter.record_matches`` to every returned record (see post_filter.py for the format).
-
-All AND-groups that share the same client-side requirements (time window + phrase checks) are merged into a
-single query, so a typical pattern yields exactly one query.
+* Patterns that only ask for exact IPv4 addresses (``=`` / ``IN``, joined by OR) become ONE lookup envelope
+  ``{"lookup": "ip", "values": [...]}``; patterns that only ask for exact domain names become
+  ``{"lookup": "domain", "values": [...]}``. A pattern mixing both yields one of each.
+* Every other pattern becomes exactly ONE banner search query: a plain Criminal IP query string, or
+  ``{"query": ..., "post_filter": {"any": [...]}}`` when client-side checks are needed. The post filter has one
+  group per OR-branch, so results never overlap.
 """
 import ipaddress
 import json
@@ -35,7 +34,7 @@ from stix_shifter_utils.stix_translation.src.patterns.pattern_objects import Obs
 from stix_shifter_utils.stix_translation.src.patterns.errors import SearchFeatureNotSupportedError
 from stix_shifter_utils.stix_translation.src.utils.exceptions import DataMappingException
 
-from .post_filter import FILTER_RESULT_FIELDS, build_search_id
+from .post_filter import FILTER_RESULT_FIELDS, build_search_id, build_lookup_id, LOOKUP_IP, LOOKUP_DOMAIN
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +179,7 @@ class QueryStringPatternTranslator:
         """DNF for a single 'field = value' (negated when negate is True)."""
         if _is_safe_token(value):
             return _term("s", field, value, negate)
-        result_field = FILTER_RESULT_FIELDS.get(field)
+        result_field = FILTER_RESULT_FIELDS.get(field, (None,))[0]
         if not result_field:
             raise SearchFeatureNotSupportedError(
                 "Criminal IP cannot search '{}' for a value with spaces, operator words (OR/AND/NOT) or query "
@@ -292,52 +291,134 @@ def _before_date(stop_iso):
     return (stop + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def _client_checks(server, posts):
+    """Client-side re-check of one OR-branch: re-checkable server terms plus phrase checks."""
+    checks = []
+    phrase_fields = {field for _, field, _, negate in posts if not negate}
+    for _, field, value, negate in server:
+        if field in FILTER_RESULT_FIELDS and FILTER_RESULT_FIELDS[field][0] not in phrase_fields:
+            result_field, mode = FILTER_RESULT_FIELDS[field]
+            checks.append({"field": result_field, "value": value, "negate": negate, "match": mode})
+    for _, field, value, negate in posts:
+        checks.append({"field": field, "value": value, "negate": negate, "match": "contains"})
+    return checks
+
+
 def _render_queries(dnf):
-    buckets = {}   # signature -> list of server-side group strings
-    order = []
+    """Renders the DNF as ONE banner search query (plus one client-side check group per OR-branch if needed)."""
+    rendered_groups = []
+    client_groups = []
+    needs_client = False
     for group in dnf:
         server = sorted((t for t in group if t[0] == "s"), key=lambda t: (t[1] != IP_FILTER, t[1], t[2], t[3]))
-        posts = tuple(sorted(t for t in group if t[0] == "p"))
+        posts = sorted(t for t in group if t[0] == "p")
         windows = [t for t in group if t[0] == "t"]
         if not server:
             raise SearchFeatureNotSupportedError(
                 "every OR-branch of the pattern needs at least one condition Criminal IP can search on")
-        start = stop = None
+        client_group = {}
         if windows:
             # Several windows in one group (nested qualifiers) -> use their intersection.
-            start = max(w[1] for w in windows)
-            stop = min(w[2] for w in windows)
+            client_group["start"] = max(w[1] for w in windows)
+            client_group["stop"] = min(w[2] for w in windows)
+        if posts or windows:
+            needs_client = True
+        checks = _client_checks(server, posts)
+        if checks:
+            client_group["terms"] = checks
         group_terms = [_render_term(t) for t in server]
-        if stop:
-            group_terms.append("{}: {}".format(TIME_FILTER, _before_date(stop)))
-        signature = (start, stop, posts)
-        if signature not in buckets:
-            buckets[signature] = []
-            order.append(signature)
+        if windows:
+            group_terms.append("{}: {}".format(TIME_FILTER, _before_date(client_group["stop"])))
         rendered = " ".join(group_terms)
-        if rendered not in buckets[signature]:
-            buckets[signature].append(rendered)
+        if rendered not in rendered_groups:
+            rendered_groups.append(rendered)
+        if client_group not in client_groups:
+            client_groups.append(client_group)
 
-    queries = []
-    for signature in order:
-        start, stop, posts = signature
-        query = " OR ".join(buckets[signature])
-        post_filter = {}
-        if start:
-            post_filter["start"] = start
-        if stop:
-            post_filter["stop"] = stop
-        if posts:
-            post_filter["terms"] = [{"field": f, "value": v, "negate": n} for _, f, v, n in posts]
-        queries.append(build_search_id(query, post_filter))
-    return queries
+    query = " OR ".join(rendered_groups)
+    if not needs_client:
+        return [query]
+    return [build_search_id(query, {"any": client_groups})]
+
+
+# ---------------------------------------------------------------- lookup detection
+LOOKUP_PATHS = {"ipv4-addr:value": LOOKUP_IP, "domain-name:value": LOOKUP_DOMAIN}
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{0,62}$")
+
+
+class _NotALookup(Exception):
+    pass
+
+
+def _lookup_comparison(expression, found):
+    lookup = LOOKUP_PATHS.get(expression.object_path)
+    if lookup is None or expression.negated or \
+            expression.comparator not in (ComparisonComparators.Equal, ComparisonComparators.In):
+        raise _NotALookup()
+    if isinstance(expression.value, SetValue):
+        values = list(expression.value.element_iterator())
+    else:
+        values = [expression.value]
+    for value in values:
+        value = str(value).strip()
+        if lookup == LOOKUP_IP:
+            try:
+                addr = ipaddress.ip_address(value)
+            except ValueError:
+                raise _NotALookup()   # CIDR or invalid -> banner search (which validates and reports errors)
+            if addr.version != 4:
+                raise _NotALookup()
+            value = str(addr)
+        else:
+            value = value.lower().rstrip(".")
+            if not DOMAIN_RE.match(value):
+                raise _NotALookup()
+        if value not in found[lookup]:
+            found[lookup].append(value)
+
+
+def _collect_lookups(expression, found):
+    if isinstance(expression, Pattern):
+        _collect_lookups(expression.expression, found)
+    elif isinstance(expression, Qualifier):
+        # Lookups return Criminal IP's current verdict for the value; time qualifiers do not apply to them.
+        _collect_lookups(expression.observation_expression, found)
+    elif isinstance(expression, CombinedObservationExpression):
+        if expression.operator.name not in ("And", "Or"):
+            raise _NotALookup()
+        _collect_lookups(expression.expr1, found)
+        _collect_lookups(expression.expr2, found)
+    elif isinstance(expression, ObservationExpression):
+        _collect_lookups(expression.comparison_expression, found)
+    elif isinstance(expression, CombinedComparisonExpression):
+        if expression.operator != ComparisonExpressionOperators.Or:
+            raise _NotALookup()
+        _collect_lookups(expression.expr1, found)
+        _collect_lookups(expression.expr2, found)
+    elif isinstance(expression, ComparisonExpression):
+        _lookup_comparison(expression, found)
+    else:
+        raise _NotALookup()
+
+
+def lookup_queries(pattern):
+    """Returns lookup envelopes when the pattern only asks for exact IPv4 addresses and/or domain names
+    (joined by OR), else None."""
+    found = {LOOKUP_IP: [], LOOKUP_DOMAIN: []}
+    try:
+        _collect_lookups(pattern, found)
+    except _NotALookup:
+        return None
+    queries = [build_lookup_id(kind, found[kind]) for kind in (LOOKUP_IP, LOOKUP_DOMAIN) if found[kind]]
+    return queries or None
 
 
 def translate_pattern(pattern: Pattern, data_model_mapping, options):
     # No default time window is applied when the pattern has no START/STOP qualifier: Criminal IP data is
     # internet-scan data collected over days/weeks, so stix-shifter's "last N minutes" default would always
     # return nothing. The result limit is enforced by transmission (offset/length/result_limit).
-    translator = QueryStringPatternTranslator(pattern, data_model_mapping)
-    queries = _render_queries(translator.dnf)
+    queries = lookup_queries(pattern)
+    if not queries:
+        queries = _render_queries(QueryStringPatternTranslator(pattern, data_model_mapping).dnf)
     logger.debug("Criminal IP queries: %s", json.dumps(queries))
     return queries

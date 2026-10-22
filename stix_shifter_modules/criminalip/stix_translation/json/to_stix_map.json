@@ -90,6 +90,10 @@
         "city_name": {
             "key": "x-oca-geo.city_name",
             "object": "geo"
+        },
+        "region_name": {
+            "key": "x-oca-geo.region_name",
+            "object": "geo"
         }
     },
     "observed_time": [
@@ -160,6 +164,184 @@
         "as_name": {
             "key": "x-criminalip-banner.as_name",
             "object": "banner"
+        }
+    },
+    "asn": {
+        "number": {
+            "key": "autonomous-system.number",
+            "object": "as",
+            "transformer": "ToInteger"
+        },
+        "name": {
+            "key": "autonomous-system.name",
+            "object": "as"
+        },
+        "link": {
+            "key": "ipv4-addr.belongs_to_refs",
+            "object": "ip",
+            "references": [
+                "as"
+            ]
+        }
+    },
+    "vulnerabilities": {
+        "cve_id": {
+            "key": "x-criminalip-vulnerability.cve_id",
+            "object": "vulnerability"
+        },
+        "cvssv3_score": {
+            "key": "x-criminalip-vulnerability.cvssv3_score",
+            "object": "vulnerability"
+        },
+        "cvssv2_score": {
+            "key": "x-criminalip-vulnerability.cvssv2_score",
+            "object": "vulnerability"
+        },
+        "app_name": {
+            "key": "x-criminalip-vulnerability.app_name",
+            "object": "vulnerability"
+        },
+        "app_version": {
+            "key": "x-criminalip-vulnerability.app_version",
+            "object": "vulnerability"
+        },
+        "vendor": {
+            "key": "x-criminalip-vulnerability.vendor",
+            "object": "vulnerability"
+        },
+        "description": {
+            "key": "x-criminalip-vulnerability.description",
+            "object": "vulnerability"
+        }
+    },
+    "ip_info": {
+        "ip_ref": {
+            "key": "x-criminalip-ip.ip_ref",
+            "object": "ip_info",
+            "references": "ip"
+        },
+        "inbound_score": {
+            "key": "x-criminalip-ip.inbound_score",
+            "object": "ip_info"
+        },
+        "outbound_score": {
+            "key": "x-criminalip-ip.outbound_score",
+            "object": "ip_info"
+        },
+        "is_malicious": {
+            "key": "x-criminalip-ip.is_malicious",
+            "object": "ip_info"
+        },
+        "is_vpn": {
+            "key": "x-criminalip-ip.is_vpn",
+            "object": "ip_info"
+        },
+        "is_cloud": {
+            "key": "x-criminalip-ip.is_cloud",
+            "object": "ip_info"
+        },
+        "is_tor": {
+            "key": "x-criminalip-ip.is_tor",
+            "object": "ip_info"
+        },
+        "is_proxy": {
+            "key": "x-criminalip-ip.is_proxy",
+            "object": "ip_info"
+        },
+        "is_hosting": {
+            "key": "x-criminalip-ip.is_hosting",
+            "object": "ip_info"
+        },
+        "is_mobile": {
+            "key": "x-criminalip-ip.is_mobile",
+            "object": "ip_info"
+        },
+        "is_darkweb": {
+            "key": "x-criminalip-ip.is_darkweb",
+            "object": "ip_info"
+        },
+        "is_scanner": {
+            "key": "x-criminalip-ip.is_scanner",
+            "object": "ip_info"
+        },
+        "is_snort": {
+            "key": "x-criminalip-ip.is_snort",
+            "object": "ip_info"
+        },
+        "is_anonymous_vpn": {
+            "key": "x-criminalip-ip.is_anonymous_vpn",
+            "object": "ip_info"
+        },
+        "is_cdn": {
+            "key": "x-criminalip-ip.is_cdn",
+            "object": "ip_info"
+        },
+        "categories": {
+            "key": "x-criminalip-ip.categories",
+            "object": "ip_info"
+        },
+        "ids_classifications": {
+            "key": "x-criminalip-ip.ids_classifications",
+            "object": "ip_info"
+        },
+        "issues": {
+            "key": "x-criminalip-ip.issues",
+            "object": "ip_info"
+        },
+        "tags": {
+            "key": "x-criminalip-ip.tags",
+            "object": "ip_info"
+        },
+        "abuse_record_count": {
+            "key": "x-criminalip-ip.abuse_record_count",
+            "object": "ip_info"
+        },
+        "open_port_count": {
+            "key": "x-criminalip-ip.open_port_count",
+            "object": "ip_info"
+        },
+        "vulnerability_count": {
+            "key": "x-criminalip-ip.vulnerability_count",
+            "object": "ip_info"
+        },
+        "org_name": {
+            "key": "x-criminalip-ip.org_name",
+            "object": "ip_info"
+        },
+        "representative_domain": {
+            "key": "x-criminalip-ip.representative_domain",
+            "object": "ip_info"
+        }
+    },
+    "domain_name": {
+        "key": "domain-name.value",
+        "object": "lookup_domain"
+    },
+    "domain_info": {
+        "domain_ref": {
+            "key": "x-criminalip-domain.domain_ref",
+            "object": "domain_info",
+            "references": "lookup_domain"
+        },
+        "verdict": {
+            "key": "x-criminalip-domain.verdict",
+            "object": "domain_info"
+        },
+        "malicious_type": {
+            "key": "x-criminalip-domain.malicious_type",
+            "object": "domain_info"
+        },
+        "call_count": {
+            "key": "x-criminalip-domain.call_count",
+            "object": "domain_info"
+        },
+        "first_seen": {
+            "key": "x-criminalip-domain.first_seen",
+            "object": "domain_info"
+        },
+        "domain_type": {
+            "key": "x-criminalip-domain.domain_type",
+            "object": "domain_info"
         }
     }
 }

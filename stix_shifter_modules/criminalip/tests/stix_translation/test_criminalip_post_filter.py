@@ -42,3 +42,35 @@ class TestPostFilter(unittest.TestCase):
 
     def test_no_filter(self):
         assert record_matches(RECORD, None)
+
+
+class TestPostFilterGroups(unittest.TestCase):
+
+    def test_any_group(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import record_matches as matches
+        pf = {"any": [{"terms": [{"field": "software.product", "value": "Apache httpd"}]},
+                      {"terms": [{"field": "open_port_no", "value": "8443", "match": "equals"}]}]}
+        assert matches({"open_port_no": 8443}, pf)
+        assert matches({"open_port_no": 80, "software": [{"product": "Apache httpd"}]}, pf)
+        assert not matches({"open_port_no": 80, "software": [{"product": "nginx"}]}, pf)
+        assert not matches({"open_port_no": 84430}, pf)
+        assert not matches({}, {"any": []})
+
+    def test_cidr_and_bool(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import term_matches
+        assert term_matches({"ip_address": "8.8.8.8"}, {"field": "ip_address", "value": "8.8.8.0/24", "match": "cidr"})
+        assert not term_matches({"ip_address": "8.8.9.8"},
+                                {"field": "ip_address", "value": "8.8.8.0/24", "match": "cidr"})
+        assert term_matches({"ssl_expired": False}, {"field": "ssl_expired", "value": "false", "match": "equals"})
+
+    def test_lookup_ids(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import build_lookup_id, parse_lookup, \
+            validate_envelope
+        sid = build_lookup_id("ip", ["1.2.3.4"])
+        assert parse_lookup(sid) == ("ip", ["1.2.3.4"])
+        assert parse_lookup("ip: 1.2.3.4") is None
+        assert parse_lookup('{"lookup": "url", "values": ["x"]}') is None
+        assert parse_search_id(sid)[1] is None
+        validate_envelope(sid)
+        with self.assertRaises(ValueError):
+            validate_envelope('{"lookup": "ip", "values": []}')

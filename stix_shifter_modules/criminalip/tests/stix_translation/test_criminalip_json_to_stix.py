@@ -170,3 +170,75 @@ class TestCriminalIPJsonToStix(unittest.TestCase):
         observed = bundle["objects"][1:]
         assert len(observed) == 1
         assert observed[0]["objects"]
+
+
+def ip_report_record():
+    with open(os.path.join(SAMPLES, "v2_asset_ip_report_34.22.91.145_with_cves.json")) as f:
+        report = json.load(f)
+    with open(os.path.join(SAMPLES, "v1_asset_ip_report_summary_185.220.101.1.json")) as f:
+        report["report_summary"] = json.load(f)
+    report["criminalip_record_type"] = "ip_report"
+    return report
+
+
+class TestCriminalIPLookupJsonToStix(unittest.TestCase):
+
+    def test_ip_report_observations(self):
+        report = ip_report_record()
+        bundle = to_bundle([report])
+        observed = [o for o in bundle["objects"] if o["type"] == "observed-data"]
+        assert len(observed) == 1 + len(report["port"]["data"])
+        main = objects_by_type(observed[0])
+        ip = main["ipv4-addr"][0]
+        assert ip["value"] == "34.22.91.145"
+        asys = main["autonomous-system"][0]
+        assert asys == {"type": "autonomous-system", "number": 396982, "name": "Google LLC"}
+        assert observed[0]["objects"][ip["belongs_to_refs"][0]]["number"] == 396982
+        assert main["x-oca-geo"][0]["country_iso_code"] == "KR"
+        assert main["domain-name"][0]["value"] == "145.91.22.34.bc.googleusercontent.com"
+        info = main["x-criminalip-ip"][0]
+        assert info["inbound_score"] == "Critical"
+        assert info["is_malicious"] is True
+        assert info["is_cloud"] is True and info["is_tor"] is False
+        assert "categories" in info
+        assert observed[0]["objects"][info["ip_ref"]]["value"] == "34.22.91.145"
+        cves = [v["cve_id"] for v in main["x-criminalip-vulnerability"]]
+        assert cves == [v["cve_id"] for v in report["vulnerability"]["data"]]
+        assert main["x-criminalip-vulnerability"][0]["cvssv3_score"] == 8.8
+        assert observed[0]["first_observed"] == to_iso(report["timestamp"])
+
+    def test_ip_report_port_observations(self):
+        report = ip_report_record()
+        observed = [o for o in to_bundle([report])["objects"] if o["type"] == "observed-data"][1:]
+        ports = sorted(objects_by_type(o)["network-traffic"][0]["dst_port"] for o in observed)
+        assert ports == sorted(int(p["open_port_no"]) for p in report["port"]["data"])
+        first = objects_by_type(observed[0])
+        assert first["ipv4-addr"][0]["value"] == "34.22.91.145"
+        assert {"Apache", "OpenSSL"} <= {s["name"] for s in first["software"]}
+        assert first["x-criminalip-banner"][0]["as_name"] == "Google LLC"
+
+    def test_ip_report_detected_without_tag(self):
+        report = ip_report_record()
+        report.pop("criminalip_record_type")
+        assert len(to_bundle([report])["objects"]) > 2
+
+    def test_domain_lookup(self):
+        with open(os.path.join(SAMPLES, "v1_domain_quick_hash_view_google.com.json")) as f:
+            hash_view = json.load(f)["data"]
+        record = {"criminalip_record_type": "domain_quick", "domain": "google.com", "hash_view": hash_view,
+                  "malicious_view": {"type": "phishing"}}
+        observed = [o for o in to_bundle([record])["objects"] if o["type"] == "observed-data"]
+        assert len(observed) == 1
+        objs = objects_by_type(observed[0])
+        assert objs["domain-name"][0]["value"] == "google.com"
+        info = objs["x-criminalip-domain"][0]
+        assert info["verdict"] == "safe"
+        assert info["domain_type"] == "trusted-domain"
+        assert info["malicious_type"] == "phishing"
+        assert info["call_count"] == 96364
+        assert observed[0]["objects"][info["domain_ref"]]["value"] == "google.com"
+
+    def test_mixed_records(self):
+        records = load_results("v2_banner_search_openssh_kr.json")[:1] + [ip_report_record()]
+        observed = [o for o in to_bundle(records)["objects"] if o["type"] == "observed-data"]
+        assert len(observed) == 1 + 1 + len(ip_report_record()["port"]["data"])

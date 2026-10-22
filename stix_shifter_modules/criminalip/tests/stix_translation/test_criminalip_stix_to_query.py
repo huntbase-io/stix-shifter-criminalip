@@ -20,8 +20,12 @@ def queries(pattern):
 
 class TestCriminalIPStixToQuery(unittest.TestCase):
 
-    def test_ipv4_single(self):
-        assert queries("[ipv4-addr:value = '8.8.8.8']") == ["ip: 8.8.8.8"]
+    def test_ipv4_single_is_lookup(self):
+        assert [json.loads(q) for q in queries("[ipv4-addr:value = '8.8.8.8']")] == \
+            [{"lookup": "ip", "values": ["8.8.8.8"]}]
+
+    def test_ipv4_with_other_conditions_uses_banner_search(self):
+        assert queries("[ipv4-addr:value = '8.8.8.8' AND network-traffic:dst_port = 53]") == ["ip: 8.8.8.8 port: 53"]
 
     def test_ipv4_cidr_equal_and_issubset(self):
         assert queries("[ipv4-addr:value = '8.8.8.0/24']") == ["ip: 8.8.8.0/24"]
@@ -45,7 +49,9 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
 
     def test_unmapped_attribute_dropped_in_or(self):
         result = translate("[ipv6-addr:value = '::1' OR ipv4-addr:value = '1.2.3.4']")
-        assert result['queries'] == ["ip: 1.2.3.4"]
+        assert [json.loads(q) for q in result['queries']] == [{"lookup": "ip", "values": ["1.2.3.4"]}]
+        result = translate("[ipv6-addr:value = '::1' OR network-traffic:dst_port = 22]")
+        assert result['queries'] == ["port: 22"]
 
     def test_unmapped_attribute_in_and_fails(self):
         result = translate("[software:vendor = 'OpenBSD' AND software:name = 'OpenSSH']")
@@ -93,8 +99,8 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
             ["NOT country: CN NOT country: US port: 22"]
 
     def test_domain_maps_to_hostname_or_banner_domain(self):
-        assert queries("[domain-name:value = 'dns.google']") == \
-            ["hostname: dns.google OR domain_from_banner: dns.google"]
+        assert queries("[domain-name:value = 'dns.google' AND network-traffic:dst_port = 443]") == \
+            ["hostname: dns.google port: 443 OR domain_from_banner: dns.google port: 443"]
         assert queries("[network-traffic:dst_port = 53 AND domain-name:value != 'dns.google']") == \
             ["NOT domain_from_banner: dns.google NOT hostname: dns.google port: 53"]
 
@@ -118,8 +124,8 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         q = queries("[x509-certificate:issuer = 'C=US, O=Google Trust Services, CN=WR2']")
         query, post = parse_search_id(q[0])
         assert query == "ssl_issuer_organization: Services"
-        assert post == {"terms": [{"field": "ssl_issuer_organization", "value": "Google Trust Services",
-                                   "negate": False}]}
+        assert post == {"any": [{"terms": [{"field": "ssl_issuer_organization", "value": "Google Trust Services",
+                                            "negate": False, "match": "contains"}]}]}
 
     def test_x509_issuer_without_org_fails(self):
         result = translate("[x509-certificate:issuer = 'CN=WR2']")
@@ -130,13 +136,16 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         assert len(q) == 1
         query, post = parse_search_id(q[0])
         assert query == "port: 8443 product: Obsidian"
-        assert post["terms"] == [{"field": "software.product", "value": "Plesk Obsidian", "negate": False}]
+        assert post == {"any": [{"terms": [
+            {"field": "open_port_no", "value": "8443", "negate": False, "match": "equals"},
+            {"field": "software.product", "value": "Plesk Obsidian", "negate": False, "match": "contains"}]}]}
 
     def test_negated_multi_word_value_is_client_side_only(self):
         q = queries("[network-traffic:dst_port = 443 AND autonomous-system:name != 'Google LLC']")
         query, post = parse_search_id(q[0])
         assert query == "port: 443"
-        assert post["terms"] == [{"field": "as_name", "value": "Google LLC", "negate": True}]
+        assert post["any"][0]["terms"][-1] == {"field": "as_name", "value": "Google LLC", "negate": True,
+                                               "match": "contains"}
 
     def test_only_client_side_conditions_rejected(self):
         result = translate("[software:name != 'Apache httpd']")
@@ -147,28 +156,37 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         result = translate("[x-criminalip-banner:isp = 'Korea Telecom']")
         assert result['success'] is False
 
-    def test_groups_with_different_post_filters_are_split(self):
+    def test_groups_with_different_post_filters_share_one_query(self):
         q = queries("[x-criminalip-banner:tags[*] = 'Data Leak' OR software:name = 'nginx']")
-        assert len(q) == 2
-        assert "product: nginx" in q
-        other = [parse_search_id(x) for x in q if x != "product: nginx"][0]
-        assert other[0] == "tag: Data"
-        assert other[1]["terms"][0]["value"] == "Data Leak"
+        assert len(q) == 1
+        query, post = parse_search_id(q[0])
+        assert sorted(query.split(" OR ")) == ["product: nginx", "tag: Data"]
+        groups = post["any"]
+        assert len(groups) == 2
+        assert {"field": "tags", "value": "Data Leak", "negate": False, "match": "contains"} in \
+            [t for g in groups for t in g["terms"]]
+        assert {"field": "software.product", "value": "nginx", "negate": False, "match": "contains"} in \
+            [t for g in groups for t in g["terms"]]
 
     def test_start_stop_qualifier(self):
         q = queries("[network-traffic:dst_port = 22] START t'2026-10-01T00:00:00Z' STOP t'2026-10-22T10:00:00Z'")
         query, post = parse_search_id(q[0])
         assert query == "port: 22 before: 2026-10-23"
-        assert post == {"start": "2026-10-01T00:00:00Z", "stop": "2026-10-22T10:00:00Z"}
+        assert post == {"any": [{"start": "2026-10-01T00:00:00Z", "stop": "2026-10-22T10:00:00Z",
+                                 "terms": [{"field": "open_port_no", "value": "22", "negate": False,
+                                            "match": "equals"}]}]}
 
     def test_no_default_time_window(self):
         assert queries("[network-traffic:dst_port = 22]") == ["port: 22"]
 
-    def test_mixed_qualifiers_split_queries(self):
+    def test_mixed_qualifiers_share_one_query(self):
         q = queries("[network-traffic:dst_port = 22] START t'2026-10-01T00:00:00Z' STOP t'2026-10-02T00:00:00Z' "
                     "OR [network-traffic:dst_port = 23]")
-        assert len(q) == 2
-        assert "port: 23" in q
+        assert len(q) == 1
+        query, post = parse_search_id(q[0])
+        assert sorted(query.split(" OR ")) == ["port: 22 before: 2026-10-03", "port: 23"]
+        assert {"terms": [{"field": "open_port_no", "value": "23", "negate": False, "match": "equals"}]} \
+            in post["any"]
 
     def test_value_validation(self):
         assert translate("[x-criminalip-banner:status_code = 'abc']")['success'] is False
@@ -188,8 +206,9 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         assert 'OR-groups' in result['error']
 
     def test_validate_pattern_option(self):
-        result = translate("[ipv4-addr:value = '1.2.3.4']", {"validate_pattern": True})
-        assert result['queries'] == ["ip: 1.2.3.4"]
+        result = translate("[ipv4-addr:value = '1.2.3.4' AND network-traffic:dst_port = 22]",
+                           {"validate_pattern": True})
+        assert result['queries'] == ["ip: 1.2.3.4 port: 22"]
 
     def test_output_is_json_or_plain(self):
         for q in queries("[software:name = 'Apache httpd'] OR [ipv4-addr:value = '1.1.1.1']"):
@@ -200,7 +219,7 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         # 'x OR y' must not become 'title: OR' (the server would split the query at OR)
         query, post = parse_search_id(queries("[x-criminalip-banner:title = 'x OR y']")[0])
         assert query == "title: x"
-        assert post["terms"][0]["value"] == "x OR y"
+        assert post["any"][0]["terms"][0]["value"] == "x OR y"
         query, _ = parse_search_id(queries("[x-criminalip-banner:title = 'a NOT bb or ccc']")[0])
         assert query == "title: ccc"
 
@@ -217,7 +236,7 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
     def test_other_whitespace_uses_phrase_path(self):
         query, post = parse_search_id(queries("[x-criminalip-banner:title = 'Plesk\tObsidian']")[0])
         assert query == "title: Obsidian"
-        assert post["terms"][0]["value"] == "Plesk Obsidian"
+        assert post["any"][0]["terms"][0]["value"] == "Plesk Obsidian"
 
     def test_query_syntax_characters_never_sent(self):
         # verified live: '*' is a wildcard, '(' is a parse error, a backslash trips the Cloudflare WAF
@@ -232,7 +251,8 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         for value, (expected_query, expected_phrase) in cases.items():
             query, post = parse_search_id(queries("[x-criminalip-banner:title = '{}']".format(value))[0])
             assert query == expected_query, (value, query)
-            assert post["terms"] == [{"field": "title", "value": expected_phrase, "negate": False}], value
+            assert post == {"any": [{"terms": [{"field": "title", "value": expected_phrase, "negate": False,
+                                                "match": "contains"}]}]}, value
 
     def test_query_syntax_without_client_side_check_rejected(self):
         for value in ("abc*", "a(b", "?"):
@@ -245,9 +265,85 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         query, post = parse_search_id(queries("[network-traffic:dst_port = 443 AND "
                                               "x-criminalip-banner:title != 'Obsidi*']")[0])
         assert query == "port: 443"
-        assert post["terms"] == [{"field": "title", "value": "Obsidi*", "negate": True}]
+        assert post == {"any": [{"terms": [
+            {"field": "open_port_no", "value": "443", "negate": False, "match": "equals"},
+            {"field": "title", "value": "Obsidi*", "negate": True, "match": "contains"}]}]}
 
     def test_plain_punctuation_is_sent_unchanged(self):
-        assert queries("[domain-name:value = 'my-host.example.com']") == \
-            ["hostname: my-host.example.com OR domain_from_banner: my-host.example.com"]
+        assert queries("[domain-name:value = 'my-host.example.com' AND network-traffic:dst_port = 80]") == \
+            ["hostname: my-host.example.com port: 80 OR domain_from_banner: my-host.example.com port: 80"]
         assert queries("[software:version = '7.4p1']") == ["product_version: 7.4p1"]
+
+
+class TestCriminalIPLookupTranslation(unittest.TestCase):
+
+    def lookups(self, pattern):
+        return [json.loads(q) for q in queries(pattern)]
+
+    def test_ip_in_list(self):
+        assert self.lookups("[ipv4-addr:value IN ('8.8.8.8', '1.1.1.1', '8.8.8.8')]") == \
+            [{"lookup": "ip", "values": ["8.8.8.8", "1.1.1.1"]}]
+
+    def test_ip_or_and_observations(self):
+        result = self.lookups("[ipv4-addr:value = '8.8.8.8' OR ipv4-addr:value = '1.1.1.1'] AND "
+                              "[ipv4-addr:value = '9.9.9.9']")
+        assert len(result) == 1 and result[0]["lookup"] == "ip"
+        assert sorted(result[0]["values"]) == ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+
+    def test_domain_lookup_normalised(self):
+        assert self.lookups("[domain-name:value = 'Example.COM.']") == \
+            [{"lookup": "domain", "values": ["example.com"]}]
+
+    def test_mixed_ip_and_domain(self):
+        assert self.lookups("[ipv4-addr:value = '8.8.8.8'] OR [domain-name:value = 'google.com']") == \
+            [{"lookup": "ip", "values": ["8.8.8.8"]}, {"lookup": "domain", "values": ["google.com"]}]
+
+    def test_qualifier_does_not_prevent_lookup(self):
+        assert self.lookups("[ipv4-addr:value = '8.8.8.8'] START t'2026-10-01T00:00:00Z' "
+                            "STOP t'2026-10-22T00:00:00Z'") == [{"lookup": "ip", "values": ["8.8.8.8"]}]
+
+    def test_large_in_list_is_not_limited_by_dnf_cap(self):
+        ips = ", ".join("'10.0.{}.{}'".format(i // 250, i % 250 + 1) for i in range(100))
+        assert len(self.lookups("[ipv4-addr:value IN ({})]".format(ips))[0]["values"]) == 100
+
+    def test_not_lookups(self):
+        assert queries("[ipv4-addr:value = '8.8.8.0/24']") == ["ip: 8.8.8.0/24"]
+        assert queries("[ipv4-addr:value != '8.8.8.8' AND network-traffic:dst_port = 53]") == \
+            ["NOT ip: 8.8.8.8 port: 53"]
+        assert queries("[ipv4-addr:value ISSUBSET '8.8.8.8']") == ["ip: 8.8.8.8/32"]
+        assert queries("[ipv4-addr:value = '8.8.8.8'] OR [network-traffic:dst_port = 22]") in \
+            (["ip: 8.8.8.8 OR port: 22"], ["port: 22 OR ip: 8.8.8.8"])
+        assert queries("[network-traffic:dst_ref.value = '1.2.3.4']") == ["ip: 1.2.3.4"]
+
+    def test_invalid_ip_value_still_errors(self):
+        result = translate("[ipv4-addr:value = 'fe80::1']")
+        assert result['success'] is False
+
+
+class TestCriminalIPSingleQuerySemantics(unittest.TestCase):
+
+    def test_branch_checks_do_not_leak(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import record_matches
+        q = queries("[software:name = 'Plesk Obsidian'] OR [network-traffic:dst_port = 22]")
+        assert len(q) == 1
+        _, post = parse_search_id(q[0])
+        plesk = {"open_port_no": 8443, "software": [{"product": "Plesk Obsidian"}]}
+        ssh = {"open_port_no": 22, "software": [{"product": "OpenSSH"}]}
+        other_obsidian = {"open_port_no": 80, "software": [{"product": "Obsidian Notes"}]}
+        assert record_matches(plesk, post)
+        assert record_matches(ssh, post)
+        assert not record_matches(other_obsidian, post)
+
+    def test_no_client_checks_means_plain_query(self):
+        q = queries("[software:name = 'nginx'] OR [network-traffic:dst_port = 22]")
+        assert len(q) == 1 and not q[0].startswith("{")
+
+    def test_cidr_recheck(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import record_matches
+        q = queries("[ipv4-addr:value = '8.8.8.0/24' AND software:name = 'Apache httpd'] OR "
+                    "[network-traffic:dst_port = 22]")
+        _, post = parse_search_id(q[0])
+        assert record_matches({"ip_address": "8.8.8.9", "open_port_no": 80,
+                               "software": [{"product": "Apache httpd"}]}, post)
+        assert not record_matches({"ip_address": "9.9.9.9", "open_port_no": 80,
+                                   "software": [{"product": "Apache httpd"}]}, post)

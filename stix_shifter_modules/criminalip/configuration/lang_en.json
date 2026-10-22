@@ -23,7 +23,7 @@
             },
             "max_api_calls": {
                 "label": "Maximum API calls per results request",
-                "description": "Upper bound on the number of Criminal IP banner search calls made for one results request (each call returns up to 10 records and consumes credits). Valid input range is {{min}} to {{max}}."
+                "description": "Upper bound on the number of Criminal IP API calls made for one results request. Each call consumes credits: a banner search call returns up to 10 records, an IP lookup costs 2 calls per IP and a domain lookup 1-2 calls per domain. Valid input range is {{min}} to {{max}}."
             }
         }
     },

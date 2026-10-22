@@ -25,6 +25,12 @@ error_mapping = {
     502: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
     503: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
     504: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
+    # Cloudflare origin errors (520 unknown, 521 down, 522 connection timed out, 523 unreachable, 524 timeout)
+    520: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
+    521: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
+    522: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
+    523: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
+    524: ErrorCode.TRANSMISSION_REMOTE_SYSTEM_IS_UNAVAILABLE,
     # Symbolic codes from api_client.CriminalIPResponseError
     'invalid_api_key': ErrorCode.TRANSMISSION_AUTH_CREDENTIALS,
     'results_limited': ErrorCode.TRANSMISSION_FORBIDDEN,

@@ -26,6 +26,9 @@ class CriminalIPResponseError(Exception):
 class APIClient:
     PING_ENDPOINT = 'v1/user/me'
     SEARCH_ENDPOINT = 'v2/banner/search'
+    IP_REPORT_ENDPOINT = 'v2/asset/ip/report'
+    IP_REPORT_SUMMARY_ENDPOINT = 'v1/asset/ip/report/summary'
+    DOMAIN_QUICK_ENDPOINT = 'v1/domain/quick/{}/view'
     USER_AGENT = 'stix-shifter-criminalip/1.0'
 
     def __init__(self, connection, configuration):
@@ -61,6 +64,28 @@ class APIClient:
         if not isinstance(data, dict):
             data = {}
         return data
+
+    async def ip_report(self, ip):
+        """GET /v2/asset/ip/report (without full=true: list sections are capped at 20 items). Flat object."""
+        response = await self.client.call_api(self.IP_REPORT_ENDPOINT, 'GET', urldata={'ip': ip},
+                                              timeout=self.timeout)
+        return self._parse(response)
+
+    async def ip_report_summary(self, ip):
+        """GET /v1/asset/ip/report/summary: compact verdict (ip_scoring.is_malicious, detection flags)."""
+        response = await self.client.call_api(self.IP_REPORT_SUMMARY_ENDPOINT, 'GET', urldata={'ip': ip},
+                                              timeout=self.timeout)
+        return self._parse(response)
+
+    async def domain_quick(self, kind, domain):
+        """GET /v1/domain/quick/{hash|malicious|trusted}/view. Returns ``data`` ({} for "No Data").
+        Synchronous database lookup; never starts a domain scan."""
+        if kind not in ('hash', 'malicious', 'trusted'):
+            raise ValueError('unknown quick lookup: {}'.format(kind))
+        response = await self.client.call_api(self.DOMAIN_QUICK_ENDPOINT.format(kind), 'GET',
+                                              urldata={'domain': domain}, timeout=self.timeout)
+        data = self._parse(response).get('data')
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def _header(headers, name):
