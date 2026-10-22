@@ -9,7 +9,9 @@ from .api_client import APIClient, CriminalIPResponseError
 from ..stix_translation.post_filter import parse_search_id, record_matches
 
 # Matches the filter names in a Criminal IP query string, e.g. "ip" and "port" in "ip: 8.8.8.0/24 port: 443".
-FILTER_NAME_RE = re.compile(r'(?:^|\s)([A-Za-z_]+)\s*:')
+# The translator always renders terms as 'name: value', so a colon inside a value (e.g. 'title: port:22') is not
+# mistaken for a filter name.
+FILTER_NAME_RE = re.compile(r'(?:^|\s)([A-Za-z_]+): ')
 
 
 class Connector(BaseJsonSyncConnector):
@@ -23,6 +25,9 @@ class Connector(BaseJsonSyncConnector):
     # CONCURRENCY_BACKOFF * attempt seconds before each one.
     CONCURRENCY_RETRIES = 2
     CONCURRENCY_BACKOFF = 3
+    # monotonic time of the last Criminal IP call made by any Connector in this process. stix-shifter creates a new
+    # Connector for every results request, so per-instance state would not space calls across pages.
+    _last_call = None
 
     def __init__(self, connection, configuration):
         self.api_client = APIClient(connection, configuration)
@@ -31,7 +36,6 @@ class Connector(BaseJsonSyncConnector):
         options = connection.get('options', {})
         self.result_limit = self._positive_int(options.get('result_limit'), self.DEFAULT_RESULT_LIMIT)
         self.max_api_calls = self._positive_int(options.get('max_api_calls'), self.DEFAULT_MAX_API_CALLS)
-        self._last_call = None
 
     @staticmethod
     def _positive_int(value, default):
@@ -77,11 +81,12 @@ class Connector(BaseJsonSyncConnector):
         return return_obj
 
     async def _throttle(self):
-        if self._last_call is not None:
-            wait = self.MIN_CALL_INTERVAL - (time.monotonic() - self._last_call)
+        last = Connector._last_call
+        if last is not None:
+            wait = self.MIN_CALL_INTERVAL - (time.monotonic() - last)
             if wait > 0:
                 await asyncio.sleep(wait)
-        self._last_call = time.monotonic()
+        Connector._last_call = time.monotonic()
 
     async def _search_page(self, query, api_offset):
         await self._throttle()

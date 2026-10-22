@@ -223,6 +223,23 @@ class TestCriminalIPResults(unittest.TestCase):
         self.assertIn('bogusfilter', ''.join(logs.output))
 
     @patch(CALL_API)
+    def test_colon_inside_value_is_not_a_filter_name(self, mock_api):
+        body = json.loads(load('v2_banner_search_openssh_kr.json'))
+        body['data']['groups'] = [{'keywords': [], 'filters': [{'key': 'title', 'value': 'port:22', 'negate': False}]}]
+        mock_api.return_value = json_response(body)
+        connector = Connector(connection(), CONFIG)
+        with patch.object(connector.logger, 'warning') as warning:
+            run(connector.create_results_connection('title: port:22', 0, 5))
+        warning.assert_not_called()
+
+    @patch(CALL_API)
+    def test_http_429_after_client_retries_is_too_many_requests(self, mock_api):
+        mock_api.side_effect = Exception('Max retries exceeded. too_many_requests with max retry (1)')
+        result = run(Connector(connection(), CONFIG).create_results_connection('port: 22', 0, 10))
+        self.assertFalse(result['success'])
+        self.assertEqual(result['code'], 'too_many_requests')
+
+    @patch(CALL_API)
     def test_result_limit_caps_calls(self, mock_api):
         mock_api.side_effect = paged_backend(1000)
         result = run(Connector(connection(result_limit=15), CONFIG).create_results_connection('port: 22', 0, 100))
@@ -430,6 +447,18 @@ class TestCriminalIPConcurrencyLimit(unittest.TestCase):
 
 
 class TestCriminalIPThrottle(unittest.TestCase):
+
+    def setUp(self):
+        Connector._last_call = None
+
+    @patch(CALL_API)
+    def test_spacing_holds_across_connector_instances(self, mock_api):
+        # stix-shifter builds a new Connector per results request; consecutive requests must still be spaced
+        mock_api.side_effect = paged_backend(1000)
+        with patch('stix_shifter_modules.criminalip.stix_transmission.connector.asyncio.sleep') as sleep:
+            run(Connector(connection(), CONFIG).create_results_connection('port: 22', 0, 5))
+            run(Connector(connection(), CONFIG).create_results_connection('port: 22', 5, 5))
+        self.assertEqual(sleep.call_count, 1)
 
     @patch(CALL_API)
     def test_page_calls_are_spaced(self, mock_api):
