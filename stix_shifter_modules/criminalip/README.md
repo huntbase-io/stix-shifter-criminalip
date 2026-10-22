@@ -58,9 +58,9 @@ translator:
 | `OR` has the lowest precedence, so `a b OR c` means `(a AND b) OR c`, and there are no parentheses. | The pattern is rewritten into disjunctive normal form (an OR of AND-groups): `[a AND (b OR c)]` becomes `a b OR a c`. `IN (x, y)` is distributed the same way. At most 64 groups are allowed. |
 | Values cannot contain spaces, and quoted values match nothing. | For a multi-word value, the longest word is sent (`software:name = 'Plesk Obsidian'` becomes `product: Obsidian`), and the full phrase is checked against each returned record on the client side. A negated multi-word value is checked only on the client side. The same applies to values that the server's Lucene-style parser would read as syntax: the operator words `OR`/`AND`/`NOT` (parse error), `*` and `?` (wildcards, which would widen an exact match), brackets, `^`, `~`, `!`, `&&`/`\|\|` and a leading `+`, `-` or `/` (parse errors). Only the longest plain fragment is sent (`title = 'Obsidi*'` becomes `title: Obsidi`), and the exact value is checked on the client side. A backslash cannot be used as an escape because it triggers the Cloudflare WAF. When the field has no client-side check (for example `isp`), such a value is rejected. A colon inside a value is safe (`title: port:22` is read as one value). |
 | Unknown filter names are silently treated as keywords. | Only documented filter names are emitted. Transmission checks `data.groups` and logs a warning if a filter was not recognised. |
-| `after:` always returns 0 results, but `before:` works. | `START t'..' STOP t'..'` becomes `before: <STOP date + 1 day>` plus a client-side `scan_dtime` window [START, STOP]. |
+| `after:` always returns 0 results, but `before:` works. | `START t'..' STOP t'..'` becomes `before: <STOP date + 1 day>` plus a client-side `scan_dtime` window [START, STOP) (START inclusive, STOP exclusive, as in STIX). |
 | `ip:` accepts a single IPv4 address or a CIDR range. IPv6 is not supported. | `ipv4-addr:value = '1.2.3.0/24'` and `ISSUBSET '1.2.3.0/24'` both become `ip: 1.2.3.0/24`. An IPv6 value raises an error, and `ipv6-addr` is unmapped. |
-| `service:` is the real filter name; `service_name:` is ignored. | `network-traffic:protocols[*]` becomes `service:`. |
+| `service:` is the real filter name; `service_name:` is ignored. `service:` holds application protocols (`ssh`, `http`), so `service: tcp` matches nothing. | `network-traffic:protocols[*]` becomes `service:` for application protocols. `tcp`/`udp` have no filter and are checked on the client side against the record's `socket_type`, so they need at least one other searchable condition. |
 
 Unmapped STIX properties and unsupported operators (`>`, `<`, `LIKE`, `MATCHES`, `ISSUPERSET`, `FOLLOWEDBY`) are
 handled the usual stix-shifter way. When they are ORed with something mappable, they are dropped with a warning.
@@ -97,6 +97,9 @@ uses Criminal IP's lookup endpoints instead of banner search:
 - CIDR values, `!=`/`NOT`, `ISSUBSET`, and any other condition (e.g. `AND network-traffic:dst_port = 22`) keep using
   banner search.
 - `START`/`STOP` qualifiers do not apply to lookups: they return Criminal IP's current knowledge of the value.
+- Lookup values are validated before any call (real IPv4 addresses; domain names made of letters, digits, `-` and
+  `_` labels) and sent URL-encoded as query parameters. Invalid values make the pattern fall back to banner search;
+  invalid values in a passthrough lookup envelope are rejected at translation and skipped by transmission.
 - **Domain scans are never started.** The quick views are synchronous database lookups; a domain Criminal IP has no
   data for produces no observation.
 - `/v2/asset/ip/report` is called without `full=true`, so each section (ports, CVEs, categories) holds at most 20
@@ -152,7 +155,11 @@ Translation makes no network calls. It rejects an empty query and logs a warning
 - filter names that are not documented banner-search filters (Criminal IP silently turns them into keywords, e.g.
   `service_name:` instead of `service:`);
 - `after:`, which always returns 0 results;
-- quoted filter values such as `title: "Plesk Obsidian"`, which match nothing (quotes only work for keyword phrases).
+- quoted filter values such as `title: "Plesk Obsidian"`, which match nothing (quotes only work for keyword phrases);
+- a missing value or an operator word (`OR`/`AND`/`NOT`) as a value, `*`/`?` in a value (a wildcard, not a literal),
+  query syntax characters such as parentheses (a parse error), and backslashes (blocked by the Cloudflare WAF).
+
+A colon inside a value (`title: port:22`) is treated as part of the value, not as a filter name.
 
 A Criminal IP query never starts with `{`. A passthrough query that does is accepted only if it is one of the
 connector's JSON envelopes, otherwise translation fails with `mapping_error`, so it can never be misread. This also

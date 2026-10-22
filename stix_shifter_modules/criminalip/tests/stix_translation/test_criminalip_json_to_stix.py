@@ -242,3 +242,68 @@ class TestCriminalIPLookupJsonToStix(unittest.TestCase):
         records = load_results("v2_banner_search_openssh_kr.json")[:1] + [ip_report_record()]
         observed = [o for o in to_bundle(records)["objects"] if o["type"] == "observed-data"]
         assert len(observed) == 1 + 1 + len(ip_report_record()["port"]["data"])
+
+
+class TestCriminalIPLookupRobustness(unittest.TestCase):
+    """Mutilated IP-report / domain records must never crash and must keep STIX-required properties.
+    (A fuller 2.0/2.1 stix2-validator fuzz was run outside the unit tests.)"""
+
+    BAD = (None, "", [], {}, {"x": 1}, 12345, True, "garbage")
+
+    def check(self, bundle, context):
+        assert "objects" in bundle, (context, bundle)
+        for observed in bundle["objects"][1:]:
+            assert observed["objects"], context
+            by_type = objects_by_type(observed)
+            for nt in by_type.get("network-traffic", []):
+                assert nt.get("protocols"), context
+                assert observed["objects"][nt["dst_ref"]]["type"] == "ipv4-addr", context
+            for ip in by_type.get("ipv4-addr", []):
+                assert isinstance(ip["value"], str), context
+            for asys in by_type.get("autonomous-system", []):
+                assert isinstance(asys["number"], int) and not isinstance(asys["number"], bool), context
+            for domain in by_type.get("domain-name", []):
+                assert isinstance(domain["value"], str), context
+
+    def test_ip_report_mutations(self):
+        base = ip_report_record()
+        targets = [("ip",), ("timestamp",), ("whois",), ("whois", "data", 0, "as_no"),
+                   ("whois", "data", 0, "org_country_code"), ("hostname", "data", 0, "domain_name_full"),
+                   ("port",), ("port", "data", 0, "open_port_no"), ("port", "data", 0, "socket"),
+                   ("port", "data", 0, "software"), ("vulnerability", "data", 0, "cve_id"),
+                   ("vulnerability", "data", 0, "cvssv3_score"), ("score",), ("issues",), ("ip_category",),
+                   ("report_summary",), ("report_summary", "summary"), ("report_summary", "ip_scoring")]
+        for path in targets:
+            for bad in self.BAD:
+                record = json.loads(json.dumps(base))
+                cur = record
+                for key in path[:-1]:
+                    cur = cur[key]
+                cur[path[-1]] = bad
+                self.check(to_bundle([record]), (path, bad))
+
+    def test_ip_report_without_valid_ip_is_skipped(self):
+        for bad in (None, "", "8.8.8.0/24", "::1", 12345):
+            record = ip_report_record()
+            record["ip"] = bad
+            assert [o for o in to_bundle([record])["objects"] if o["type"] == "observed-data"] == []
+
+    def test_domain_mutations(self):
+        base = {"criminalip_record_type": "domain_quick", "domain": "bad.example",
+                "hash_view": {"call_count": 3, "result": "malicious", "type": "phishing",
+                              "reg_dtime": "2026-01-01 00:00:00"},
+                "malicious_view": {"type": "phishing"}}
+        for key in ("domain", "hash_view", "malicious_view"):
+            for bad in self.BAD:
+                record = dict(base)
+                record[key] = bad
+                self.check(to_bundle([record]), (key, bad))
+        for key in ("call_count", "result", "type", "reg_dtime"):
+            for bad in self.BAD:
+                record = json.loads(json.dumps(base))
+                record["hash_view"][key] = bad
+                self.check(to_bundle([record]), (key, bad))
+
+    def test_non_dict_records_are_skipped(self):
+        bundle = to_bundle([None, 5, "x", [1], ip_report_record()])
+        assert len([o for o in bundle["objects"] if o["type"] == "observed-data"]) > 1

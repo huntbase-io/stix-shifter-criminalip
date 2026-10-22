@@ -16,6 +16,8 @@ from datetime import datetime
 
 from stix_shifter_utils.stix_translation.src.json_to_stix.json_to_stix import JSONToStix
 
+from .post_filter import normalize_lookup_value, LOOKUP_IP, LOOKUP_DOMAIN
+
 UNKNOWN_VALUES = {"", "unknown", "none", "null", "n/a"}
 
 # fields copied unchanged into the custom x-criminalip-banner object
@@ -192,8 +194,19 @@ IP_ISSUE_FLAGS = ["is_vpn", "is_cloud", "is_tor", "is_proxy", "is_hosting", "is_
 MAX_DESCRIPTION = 500
 
 
+def _dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _path(obj, *keys):
+    """Nested dict lookup that tolerates missing or mistyped levels."""
+    for key in keys:
+        obj = _dict(obj).get(key)
+    return obj
+
+
 def _section(report, name):
-    section = report.get(name)
+    section = _dict(report).get(name)
     if isinstance(section, dict) and isinstance(section.get("data"), list):
         return [d for d in section["data"] if isinstance(d, dict)]
     return []
@@ -202,29 +215,35 @@ def _section(report, name):
 def _unique(values):
     out = []
     for value in values:
-        if _present(value) and value not in out:
+        if _scalar(value) and value not in out:
             out.append(value)
     return out
 
 
 def _float(value):
+    if isinstance(value, bool):
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
 
 
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _ip_info(report, summary):
     info = {}
-    score = report.get("score") or {}
-    scoring = summary.get("ip_scoring") or {}
+    score = _dict(report.get("score"))
+    scoring = _dict(summary.get("ip_scoring"))
     for key in ("inbound", "outbound"):
-        value = score.get(key) or scoring.get(key)
-        if _present(value):
-            info[key + "_score"] = value
+        value = score.get(key) if _scalar(score.get(key)) else scoring.get(key)
+        if _scalar(value):
+            info[key + "_score"] = str(value)
     if isinstance(scoring.get("is_malicious"), bool):
         info["is_malicious"] = scoring["is_malicious"]
-    issues = report.get("issues") or {}
+    issues = _dict(report.get("issues"))
     for flag in IP_ISSUE_FLAGS:
         if isinstance(issues.get(flag), bool):
             info[flag] = issues[flag]
@@ -234,71 +253,79 @@ def _ip_info(report, summary):
     ids = _unique(i.get("classification") for i in _section(report, "ids"))
     if ids:
         info["ids_classifications"] = ids
-    if _present(summary.get("issue")):
-        info["issues"] = summary["issue"]
-    if _present(summary.get("tags")):
-        info["tags"] = summary["tags"]
-    security = (summary.get("summary") or {}).get("security") or {}
+    summary_issues = summary.get("issue")
+    if isinstance(summary_issues, list) and _unique(summary_issues):
+        info["issues"] = _unique(summary_issues)
+    tags = summary.get("tags")
+    if isinstance(tags, list) and _unique(tags):
+        info["tags"] = _unique(tags)
     for src, dst in (("abuse_record", "abuse_record_count"), ("open_ports", "open_port_count"),
                      ("vulnerabilities", "vulnerability_count")):
-        if isinstance(security.get(src), int):
-            info[dst] = security[src]
-    detection = (summary.get("summary") or {}).get("detection") or {}
-    if isinstance(detection.get("cdn_ip"), bool):
-        info["is_cdn"] = detection["cdn_ip"]
+        count = _count(_path(summary, "summary", "security", src))
+        if count is not None:
+            info[dst] = count
+    cdn = _path(summary, "summary", "detection", "cdn_ip")
+    if isinstance(cdn, bool):
+        info["is_cdn"] = cdn
     whois = (_section(report, "whois") or [{}])[0]
-    if _present(whois.get("org_name")):
-        info["org_name"] = whois["org_name"]
-    if _present(summary.get("summary", {}).get("connection", {}).get("representative_domain")):
-        info["representative_domain"] = summary["summary"]["connection"]["representative_domain"]
+    if _scalar(whois.get("org_name")):
+        info["org_name"] = str(whois["org_name"])
+    representative = _path(summary, "summary", "connection", "representative_domain")
+    if _scalar(representative):
+        info["representative_domain"] = str(representative)
     return info
 
 
 def _vulnerabilities(report):
     vulns = []
     for v in _section(report, "vulnerability"):
-        if not _present(v.get("cve_id")):
+        if not isinstance(v.get("cve_id"), str) or not _present(v.get("cve_id")):
             continue
-        item = {"cve_id": v["cve_id"]}
+        item = {"cve_id": v["cve_id"].strip()}
         for key in ("cvssv3_score", "cvssv2_score"):
             score = _float(v.get(key))
             if score:
                 item[key] = score
         for key in ("app_name", "app_version", "vendor"):
-            if _present(v.get(key)):
+            if _scalar(v.get(key)):
                 item[key] = str(v[key])
-        if _present(v.get("cve_description")):
+        if _scalar(v.get("cve_description")):
             item["description"] = str(v["cve_description"])[:MAX_DESCRIPTION]
         vulns.append(item)
     return vulns
 
 
 def expand_ip_report(report):
-    """One /v2/asset/ip/report (+ report/summary) -> an IP observation plus one observation per open port."""
-    ip = report.get("ip")
-    summary = report.get("report_summary") or {}
+    """One /v2/asset/ip/report (+ report/summary) -> an IP observation plus one observation per open port.
+    A report without a valid IPv4 address is skipped (every object hangs off the ipv4-addr)."""
+    ip = normalize_lookup_value(LOOKUP_IP, report.get("ip"))
+    if ip is None:
+        return []
+    summary = _dict(report.get("report_summary"))
     whois = (_section(report, "whois") or [{}])[0]
-    country = whois.get("org_country_code") or (summary.get("summary") or {}).get("connection", {}).get("country")
+    country = whois.get("org_country_code")
+    if not _scalar(country):
+        country = _path(summary, "summary", "connection", "country")
+    country = str(country).upper() if _scalar(country) else None
     out = {"ip_address": ip}
-    asn = {}
-    if isinstance(whois.get("as_no"), int) and whois["as_no"] > 0:
-        asn["number"] = whois["as_no"]
-        if _present(whois.get("as_name")):
-            asn["name"] = whois["as_name"]
-        asn["link"] = True
+    as_no = _count(whois.get("as_no"))
+    if as_no:
+        asn = {"number": as_no, "link": True}
+        if _scalar(whois.get("as_name")):
+            asn["name"] = str(whois["as_name"])
         out["asn"] = asn
     geo = {}
-    if _present(country):
-        geo["country_iso_code"] = str(country).upper()
-    if _present(whois.get("city")):
-        geo["city_name"] = whois["city"]
-    if _present(whois.get("region")):
-        geo["region_name"] = whois["region"]
+    if country:
+        geo["country_iso_code"] = country
+    for src, dst in (("city", "city_name"), ("region", "region_name")):
+        if _scalar(whois.get(src)):
+            geo[dst] = str(whois[src])
     if geo:
         out["geo"] = geo
     hostnames = _section(report, "hostname")
-    if hostnames and _present(hostnames[0].get("domain_name_full")):
-        out["hostname"] = hostnames[0]["domain_name_full"]
+    if hostnames and isinstance(hostnames[0].get("domain_name_full"), str) and \
+            _present(hostnames[0]["domain_name_full"]):
+        out["hostname"] = hostnames[0]["domain_name_full"].strip()
     vulns = _vulnerabilities(report)
     if vulns:
         out["vulnerabilities"] = vulns
@@ -306,7 +333,7 @@ def expand_ip_report(report):
     if info:
         info["ip_ref"] = True
         out["ip_info"] = info
-    observed = to_iso(report.get("timestamp"))
+    observed = to_iso(report.get("timestamp")) if _scalar(report.get("timestamp")) else None
     if observed:
         out["observed_time"] = observed
     records = [out]
@@ -330,29 +357,33 @@ def expand_ip_report(report):
         }
         if isinstance(port.get("is_vulnerability"), bool):
             banner_like["has_cve"] = port["is_vulnerability"]
-        if not _present(banner_like["open_port_no"]):
-            continue
-        records.append(normalize_record(banner_like))
+        normalized = normalize_record(banner_like)
+        if normalized.get("open_port_no") is not None:   # a port observation without a port adds nothing
+            records.append(normalized)
     return records
 
 
 def expand_domain_lookup(record):
-    """/v1/domain/quick/{hash,malicious}/view results -> one domain observation."""
-    hash_view = record.get("hash_view") or {}
-    malicious_view = record.get("malicious_view") or {}
-    domain = record.get("domain") or hash_view.get("domain")
+    """/v1/domain/quick/{hash,malicious}/view results -> one domain observation (skipped without a valid domain)."""
+    hash_view = _dict(record.get("hash_view"))
+    malicious_view = _dict(record.get("malicious_view"))
+    domain = normalize_lookup_value(LOOKUP_DOMAIN, record.get("domain")) or \
+        normalize_lookup_value(LOOKUP_DOMAIN, hash_view.get("domain"))
+    if domain is None:
+        return []
     out = {"domain_name": domain}
     info = {}
-    if _present(hash_view.get("result")):
-        info["verdict"] = hash_view["result"]
-    if _present(hash_view.get("type")):
-        info["domain_type"] = hash_view["type"]
-    if _present(malicious_view.get("type")):
-        info["malicious_type"] = malicious_view["type"]
-    call_count = hash_view.get("call_count", malicious_view.get("call_count"))
-    if isinstance(call_count, int):
+    for key, view, src in (("verdict", hash_view, "result"), ("domain_type", hash_view, "type"),
+                           ("malicious_type", malicious_view, "type")):
+        if _scalar(view.get(src)):
+            info[key] = str(view[src])
+    call_count = _count(hash_view.get("call_count"))
+    if call_count is None:
+        call_count = _count(malicious_view.get("call_count"))
+    if call_count is not None:
         info["call_count"] = call_count
-    registered = to_iso(hash_view.get("reg_dtime") or malicious_view.get("reg_dtime"))
+    reg = hash_view.get("reg_dtime") if _scalar(hash_view.get("reg_dtime")) else malicious_view.get("reg_dtime")
+    registered = to_iso(reg) if _scalar(reg) else None
     if registered:
         info["first_seen"] = registered
     if info:
@@ -364,7 +395,7 @@ def expand_domain_lookup(record):
 def expand_record(record):
     """Any record returned by transmission -> list of normalized records (one per observed-data)."""
     if not isinstance(record, dict):
-        return [record]
+        return []
     record_type = record.get(RECORD_TYPE_FIELD)
     if record_type == "ip_report" or (record_type is None and "ip" in record and "issues" in record
                                       and "ip_address" not in record):

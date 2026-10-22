@@ -6,7 +6,8 @@ from stix_shifter_utils.modules.base.stix_transmission.base_json_sync_connector 
 from stix_shifter_utils.utils.error_response import ErrorResponder
 from stix_shifter_utils.utils import logger
 from .api_client import APIClient, CriminalIPResponseError
-from ..stix_translation.post_filter import parse_search_id, record_matches, parse_lookup, LOOKUP_IP
+from ..stix_translation.post_filter import parse_search_id, record_matches, parse_lookup, LOOKUP_IP, \
+    normalize_lookup_value
 
 # Matches the filter names in a Criminal IP query string, e.g. "ip" and "port" in "ip: 8.8.8.0/24 port: 443".
 # The translator always renders terms as 'name: value', so a colon inside a value (e.g. 'title: port:22') is not
@@ -197,6 +198,14 @@ class Connector(BaseJsonSyncConnector):
 
     async def _lookup_results(self, kind, values, offset, length, metadata):
         """Offset/length index the looked-up values (one record per value that Criminal IP knows)."""
+        valid = []
+        for value in values:
+            normalized = normalize_lookup_value(kind, value)
+            if normalized is None:
+                self.logger.warning('Skipping invalid %s lookup value %r', kind, value)
+            elif normalized not in valid:
+                valid.append(normalized)
+        values = valid
         start = offset
         if isinstance(metadata, dict) and isinstance(metadata.get('value_offset'), int) \
                 and metadata['value_offset'] >= 0:

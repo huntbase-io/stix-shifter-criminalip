@@ -34,7 +34,8 @@ from stix_shifter_utils.stix_translation.src.patterns.pattern_objects import Obs
 from stix_shifter_utils.stix_translation.src.patterns.errors import SearchFeatureNotSupportedError
 from stix_shifter_utils.stix_translation.src.utils.exceptions import DataMappingException
 
-from .post_filter import FILTER_RESULT_FIELDS, build_search_id, build_lookup_id, LOOKUP_IP, LOOKUP_DOMAIN
+from .post_filter import FILTER_RESULT_FIELDS, build_search_id, build_lookup_id, LOOKUP_IP, LOOKUP_DOMAIN, \
+    normalize_lookup_value
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ MAX_DNF_GROUPS = 64
 
 TIME_FILTER = "before"
 IP_FILTER = "ip"
+SERVICE_FILTER = "service"
+TRANSPORT_PROTOCOLS = {"tcp", "udp"}
 UPPERCASE_FILTERS = {"country", "ssl_subject_country"}
 BOOLEAN_FILTERS = {"ssl_expired"}
 INTEGER_FILTERS = {"port", "status_code"}
@@ -196,6 +199,10 @@ class QueryStringPatternTranslator:
         return [frozenset([("s", field, token, False), ("p", result_field, phrase, False)])]
 
     def _field_tree(self, field, raw_value, comparator, negate):
+        if field == SERVICE_FILTER and str(raw_value).strip().lower() in TRANSPORT_PROTOCOLS:
+            # 'service:' holds application protocols (ssh, http, ...); 'tcp'/'udp' would match nothing there.
+            # There is no transport filter, so it is checked client side against the record's socket_type.
+            return _term("p", "socket_type", str(raw_value).strip().lower(), negate)
         if field == IP_FILTER:
             return _term("s", field, self._validate_ip(str(raw_value).strip(), comparator), negate)
         if comparator == ComparisonComparators.IsSubSet:
@@ -343,7 +350,6 @@ def _render_queries(dnf):
 
 # ---------------------------------------------------------------- lookup detection
 LOOKUP_PATHS = {"ipv4-addr:value": LOOKUP_IP, "domain-name:value": LOOKUP_DOMAIN}
-DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{0,62}$")
 
 
 class _NotALookup(Exception):
@@ -359,20 +365,10 @@ def _lookup_comparison(expression, found):
         values = list(expression.value.element_iterator())
     else:
         values = [expression.value]
-    for value in values:
-        value = str(value).strip()
-        if lookup == LOOKUP_IP:
-            try:
-                addr = ipaddress.ip_address(value)
-            except ValueError:
-                raise _NotALookup()   # CIDR or invalid -> banner search (which validates and reports errors)
-            if addr.version != 4:
-                raise _NotALookup()
-            value = str(addr)
-        else:
-            value = value.lower().rstrip(".")
-            if not DOMAIN_RE.match(value):
-                raise _NotALookup()
+    for raw in values:
+        value = normalize_lookup_value(lookup, str(raw))
+        if value is None:
+            raise _NotALookup()   # CIDR or invalid -> banner search (which validates and reports errors)
         if value not in found[lookup]:
             found[lookup].append(value)
 

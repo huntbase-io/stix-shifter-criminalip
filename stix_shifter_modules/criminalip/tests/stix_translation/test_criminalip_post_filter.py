@@ -37,7 +37,9 @@ class TestPostFilter(unittest.TestCase):
         assert record_matches(RECORD, {"start": "2026-10-22T00:00:00Z", "stop": "2026-10-23T00:00:00.000Z"})
         assert not record_matches(RECORD, {"start": "2026-10-22T08:00:00Z"})
         assert not record_matches(RECORD, {"stop": "2026-10-22T07:40:14Z"})
-        assert record_matches(RECORD, {"stop": "2026-10-22T07:40:15Z"})
+        assert not record_matches(RECORD, {"stop": "2026-10-22T07:40:15Z"})   # STOP is exclusive
+        assert record_matches(RECORD, {"stop": "2026-10-22T07:40:16Z"})
+        assert record_matches(RECORD, {"start": "2026-10-22T07:40:15Z"})      # START is inclusive
         assert not record_matches({"ip_address": "1.1.1.1"}, {"start": "2026-10-22T00:00:00Z"})
 
     def test_no_filter(self):

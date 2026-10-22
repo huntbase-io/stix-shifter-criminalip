@@ -70,3 +70,26 @@ class TestCriminalIPPassthrough(unittest.TestCase):
         dialects = translation.translate("criminalip", "dialects", None, None)
         assert dialects["criminalip"]["language"] == "criminalip"
         assert dialects["default"]["language"] == "stix"
+
+
+class TestCriminalIPPassthroughSafetyWarnings(unittest.TestCase):
+
+    def test_colon_inside_value_is_not_a_filter(self):
+        assert query_warnings("title: port:22") == []
+        assert query_warnings("title:foo:bar port:22") == []
+
+    def test_value_syntax_warnings(self):
+        assert any("wildcard" in w for w in query_warnings("title: Obsidi* port: 80"))
+        assert any("parse" in w for w in query_warnings("title: a(b"))
+        assert any("operator word" in w for w in query_warnings("title: OR"))
+        assert any("operator word" in w for w in query_warnings("port:"))
+        assert any("Cloudflare" in w for w in query_warnings("title: C:\\\\Windows"))
+
+    def test_keyword_phrases_and_operators_do_not_warn(self):
+        assert query_warnings('"default password" port: 8080 OR NOT country: US') == []
+
+    def test_lookup_envelope_values_validated(self):
+        result = translate('{"lookup": "ip", "values": ["8.8.8.0/24"]}')
+        assert result["success"] is False
+        result = translate('{"lookup": "domain", "values": ["bad domain.com"]}')
+        assert result["success"] is False

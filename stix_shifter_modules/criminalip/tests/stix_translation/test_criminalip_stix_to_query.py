@@ -347,3 +347,54 @@ class TestCriminalIPSingleQuerySemantics(unittest.TestCase):
                                "software": [{"product": "Apache httpd"}]}, post)
         assert not record_matches({"ip_address": "9.9.9.9", "open_port_no": 80,
                                    "software": [{"product": "Apache httpd"}]}, post)
+
+
+class TestCriminalIPTransportProtocols(unittest.TestCase):
+
+    def test_tcp_udp_are_client_side_socket_type_checks(self):
+        query, post = parse_search_id(queries("[network-traffic:protocols[*] = 'tcp' AND "
+                                              "network-traffic:dst_port = 22]")[0])
+        assert query == "port: 22"
+        assert {"field": "socket_type", "value": "tcp", "negate": False, "match": "contains"} in \
+            post["any"][0]["terms"]
+
+    def test_negated_udp(self):
+        query, post = parse_search_id(queries("[network-traffic:dst_port = 53 AND "
+                                              "network-traffic:protocols[*] != 'UDP']")[0])
+        assert query == "port: 53"
+        assert {"field": "socket_type", "value": "udp", "negate": True, "match": "contains"} in \
+            post["any"][0]["terms"]
+
+    def test_application_protocol_stays_server_side(self):
+        assert queries("[network-traffic:protocols[*] = 'ssh']") == ["service: ssh"]
+
+    def test_tcp_alone_is_rejected(self):
+        result = translate("[network-traffic:protocols[*] = 'tcp']")
+        assert result['success'] is False
+        assert result['code'] == 'invalid_parameter'
+
+    def test_record_matching(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import record_matches
+        _, post = parse_search_id(queries("[network-traffic:protocols[*] = 'udp' AND "
+                                          "network-traffic:dst_port = 53]")[0])
+        assert record_matches({"open_port_no": 53, "socket_type": "UDP"}, post)
+        assert not record_matches({"open_port_no": 53, "socket_type": "TCP"}, post)
+
+
+class TestCriminalIPLookupValueSafety(unittest.TestCase):
+
+    def test_invalid_values_never_become_lookups(self):
+        for pattern in ("[domain-name:value = 'exa mple.com']", "[domain-name:value = 'a*.example.com']",
+                        "[domain-name:value = 'example.com/../x']", "[domain-name:value = 'example.com OR x']"):
+            q = translate(pattern).get('queries', [])
+            assert not any('"lookup"' in x for x in q), (pattern, q)
+
+    def test_normalize_lookup_value(self):
+        from stix_shifter_modules.criminalip.stix_translation.post_filter import normalize_lookup_value as n
+        assert n("ip", " 8.8.8.8 ") == "8.8.8.8"
+        assert n("ip", "8.8.8.0/24") is None
+        assert n("ip", "::1") is None
+        assert n("ip", 12345) is None
+        assert n("domain", "WWW.Example.COM.") == "www.example.com"
+        for bad in ("exa mple.com", "a*.b.com", "x&y=1.com", "example", "", None, "a" * 300 + ".com"):
+            assert n("domain", bad) is None, bad

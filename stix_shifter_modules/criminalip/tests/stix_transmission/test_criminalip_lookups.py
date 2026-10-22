@@ -210,3 +210,34 @@ class TestCriminalIPLookupResilience(unittest.TestCase):
         result = run(Connector(connection(), CONFIG).create_results_connection(
             lookup_id('domain', ['x.example']), 0, 10))
         assert result == {'success': True, 'data': []}
+
+
+@patch.object(Connector, 'MIN_CALL_INTERVAL', 0)
+class TestCriminalIPLookupInputSafety(unittest.TestCase):
+
+    @patch(CALL_API)
+    def test_invalid_values_never_sent(self, mock_api):
+        mock_api.side_effect = ip_backend()
+        result = run(Connector(connection(), CONFIG).create_results_connection(
+            lookup_id('ip', ['8.8.8.0/24', '::1', 'x; rm', 42, ' 34.22.91.145 ', '34.22.91.145']), 0, 10))
+        assert [r['ip'] for r in result['data']] == ['34.22.91.145']
+        assert {c.kwargs['urldata']['ip'] for c in mock_api.call_args_list} == {'34.22.91.145'}
+
+    @patch(CALL_API)
+    def test_invalid_domains_never_sent(self, mock_api):
+        mock_api.return_value = json_response(HASH_VIEW)
+        result = run(Connector(connection(), CONFIG).create_results_connection(
+            lookup_id('domain', ['bad domain.com', 'a/b.com', 'Google.COM']), 0, 10))
+        assert mock_api.call_count == 1
+        assert mock_api.call_args.kwargs['urldata'] == {'domain': 'google.com'}
+        assert len(result['data']) == 1
+
+    @patch(CALL_API)
+    def test_lookups_use_the_shared_throttle(self, mock_api):
+        mock_api.side_effect = ip_backend()
+        with patch.object(Connector, '_throttle') as throttle:
+            async def no_wait():
+                return None
+            throttle.side_effect = no_wait
+            run(Connector(connection(), CONFIG).create_results_connection(lookup_id('ip', ['1.2.3.4']), 0, 10))
+        assert throttle.call_count == 2

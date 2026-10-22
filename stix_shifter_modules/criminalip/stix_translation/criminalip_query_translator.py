@@ -33,8 +33,6 @@ KNOWN_FILTERS = {
     "after", "before",
 }
 
-FILTER_RE = re.compile(r'(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)\s*:')
-QUOTED_FILTER_VALUE_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"[^"]*"')
 QUOTED_RE = re.compile(r'"[^"]*"')
 
 logger = utils_logger.set_logger(__name__)
@@ -53,21 +51,62 @@ def normalize_query(query):
     return "".join(parts)
 
 
+OPERATOR_WORDS = {"OR", "AND", "NOT"}
+TOKEN_RE = re.compile(r'"[^"]*"|\S+')
+WILDCARD_RE = re.compile(r'[*?]')
+SYNTAX_RE = re.compile(r'[(){}\[\]^~!]|&&|\|\|')
+
+
+def _filters_and_values(query):
+    """Yields (filter_name, value) for each 'name: value' / 'name:value' term; keywords and operators are skipped.
+    A token right after 'name:' is always a value, so a colon inside a value (e.g. 'title: port:22') is not
+    mistaken for a filter name."""
+    tokens = TOKEN_RE.findall(query)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+        if token.startswith('"') or token.upper() in OPERATOR_WORDS:
+            continue
+        name, sep, value = token.partition(":")
+        if not sep or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            continue
+        if value == "":
+            value = tokens[i] if i < len(tokens) else ""
+            i += 1
+        yield name, value
+
+
 def query_warnings(query):
-    """Returns human-readable warnings for constructs that make Criminal IP return wrong or empty results."""
+    """Returns human-readable warnings for constructs that make Criminal IP return wrong or empty results.
+    Passthrough queries are the user's own syntax, so these are warnings only."""
     warnings = []
-    unquoted = QUOTED_RE.sub(" ", query)
-    names = [m.group(1) for m in FILTER_RE.finditer(unquoted)]
-    unknown = sorted({n for n in names if n.lower() not in KNOWN_FILTERS})
+    terms = list(_filters_and_values(query))
+    unknown = sorted({n for n, _ in terms if n.lower() not in KNOWN_FILTERS})
     if unknown:
         warnings.append("unknown filter name(s) {}: Criminal IP silently treats them as keywords (did you mean "
                         "'service' instead of 'service_name'?)".format(unknown))
-    if "after" in (n.lower() for n in names):
+    if any(n.lower() == "after" for n, _ in terms):
         warnings.append("'after:' always returns 0 results on Criminal IP; use 'before:' and filter on scan_dtime")
-    quoted = sorted({m.group(1) for m in QUOTED_FILTER_VALUE_RE.finditer(query)})
+    quoted = sorted({n for n, v in terms if v.startswith('"')})
     if quoted:
         warnings.append("quoted filter value(s) for {} match nothing on Criminal IP; filter values cannot contain "
                         "spaces (quotes only work for keyword phrases)".format(quoted))
+    missing = sorted({n for n, v in terms if v == "" or v.upper() in OPERATOR_WORDS})
+    if missing:
+        warnings.append("filter(s) {} have no value or an operator word (OR/AND/NOT) as value; Criminal IP fails "
+                        "to parse that or splits the query there".format(missing))
+    wildcards = sorted({n for n, v in terms if not v.startswith('"') and WILDCARD_RE.search(v)})
+    if wildcards:
+        warnings.append("'*'/'?' in the value of {} is a wildcard on Criminal IP, not a literal character"
+                        .format(wildcards))
+    syntax = sorted({n for n, v in terms if not v.startswith('"') and SYNTAX_RE.search(v)})
+    if syntax:
+        warnings.append("query syntax characters (parentheses, brackets, ^ ~ ! && ||) in the value of {} make "
+                        "Criminal IP fail to parse the query".format(syntax))
+    if "\\" in query:
+        warnings.append("a backslash in the query triggers the Cloudflare WAF in front of Criminal IP "
+                        "(HTTP 403 challenge)")
     return warnings
 
 

@@ -23,7 +23,7 @@ post_filter format::
 
     {"any": [                          # the record is kept when ANY group matches (OR of AND-groups)
         {"start": "2026-10-01T00:00:00Z",   # optional, inclusive lower bound on scan_dtime (UTC)
-         "stop":  "2026-10-22T00:00:00Z",   # optional, inclusive upper bound on scan_dtime (UTC)
+         "stop":  "2026-10-22T00:00:00Z",   # optional, EXCLUSIVE upper bound on scan_dtime (UTC), as in STIX
          "terms": [{"field": "software.product", "value": "Apache httpd", "negate": false,
                     "match": "contains"}]}   # every term must hold (AND); match: contains | equals | cidr
     ]}
@@ -37,6 +37,7 @@ The legacy single-group form ``{"start", "stop", "terms"}`` is still accepted.
 """
 import ipaddress
 import json
+import re
 from datetime import datetime, timezone
 
 # CIP filter name -> (banner result field, match mode). "a.b" means: field "a" is a list of objects; compare
@@ -69,6 +70,25 @@ FILTER_RESULT_FIELDS = {
 LOOKUP_IP = "ip"
 LOOKUP_DOMAIN = "domain"
 LOOKUP_TYPES = (LOOKUP_IP, LOOKUP_DOMAIN)
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$")
+
+
+def normalize_lookup_value(kind, value):
+    """Returns the canonical IPv4 address / domain name, or None when the value is not a valid one.
+    Lookup values are always validated before any call (also for passthrough envelopes)."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if kind == LOOKUP_IP:
+        try:
+            addr = ipaddress.ip_address(value)
+        except ValueError:
+            return None
+        return str(addr) if addr.version == 4 else None
+    if kind == LOOKUP_DOMAIN:
+        value = value.lower().rstrip(".")
+        return value if DOMAIN_RE.match(value) else None
+    return None
 
 
 def build_search_id(query, post_filter=None):
@@ -99,7 +119,7 @@ def parse_lookup(search_id):
     """Returns (lookup_type, [values]) for a lookup envelope, else None."""
     obj = _load(search_id)
     if obj and obj.get("lookup") in LOOKUP_TYPES and isinstance(obj.get("values"), list):
-        return obj["lookup"], [str(v).strip() for v in obj["values"] if str(v).strip()]
+        return obj["lookup"], [v for v in obj["values"] if not isinstance(v, str) or v.strip()]
     return None
 
 
@@ -123,6 +143,9 @@ def validate_envelope(text):
         lookup = parse_lookup(obj)
         if lookup is None or not lookup[1]:
             raise ValueError("lookup envelope needs \"lookup\": \"ip\" or \"domain\" and a non-empty \"values\" list")
+        invalid = [v for v in lookup[1] if normalize_lookup_value(lookup[0], v) is None]
+        if invalid:
+            raise ValueError("invalid {} lookup value(s): {}".format(lookup[0], invalid))
         return obj
     if not isinstance(obj.get("query"), str) or not obj["query"].strip():
         raise ValueError("JSON envelope needs a non-empty \"query\" string")
@@ -189,7 +212,7 @@ def _group_matches(record, group):
             return False
         if start and seen < start:
             return False
-        if stop and seen > stop:
+        if stop and seen >= stop:   # STIX: START is inclusive, STOP is exclusive
             return False
     return all(term_matches(record, t) for t in group.get("terms", []))
 
