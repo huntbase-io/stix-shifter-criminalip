@@ -195,3 +195,26 @@ class TestCriminalIPStixToQuery(unittest.TestCase):
         for q in queries("[software:name = 'Apache httpd'] OR [ipv4-addr:value = '1.1.1.1']"):
             if q.startswith("{"):
                 assert set(json.loads(q).keys()) == {"query", "post_filter"}
+
+    def test_operator_word_never_sent_as_token(self):
+        # 'x OR y' must not become 'title: OR' (the server would split the query at OR)
+        query, post = parse_search_id(queries("[x-criminalip-banner:title = 'x OR y']")[0])
+        assert query == "title: x"
+        assert post["terms"][0]["value"] == "x OR y"
+        query, _ = parse_search_id(queries("[x-criminalip-banner:title = 'a NOT bb or ccc']")[0])
+        assert query == "title: ccc"
+
+    def test_operator_word_value_rejected(self):
+        for value in ("OR", "not", "AND", "OR AND"):
+            result = translate("[x-criminalip-banner:title = '{}']".format(value))
+            assert result['success'] is False, value
+            assert result['code'] == 'invalid_parameter'
+
+    def test_colon_in_value_stays_a_value(self):
+        # verified live: 'title: port:22' parses as filter title with value 'port:22'
+        assert queries("[x-criminalip-banner:title = 'port:22']") == ["title: port:22"]
+
+    def test_other_whitespace_uses_phrase_path(self):
+        query, post = parse_search_id(queries("[x-criminalip-banner:title = 'Plesk\tObsidian']")[0])
+        assert query == "title: Obsidian"
+        assert post["terms"][0]["value"] == "Plesk Obsidian"

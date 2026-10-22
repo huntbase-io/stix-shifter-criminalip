@@ -53,6 +53,9 @@ DN_ATTRIBUTE_FILTERS = {
                                 "C": "ssl_subject_country"},
     "ssl_issuer_organization": {"O": "ssl_issuer_organization"},
 }
+# Words the Criminal IP query parser treats as operators. A value (or the token picked from a multi-word value)
+# equal to one of these would change the query structure, e.g. 'title: OR' splits the query into two groups.
+QUERY_OPERATOR_WORDS = {"OR", "AND", "NOT"}
 SUPPORTED_COMPARATORS = {ComparisonComparators.Equal, ComparisonComparators.NotEqual, ComparisonComparators.In,
                          ComparisonComparators.IsSubSet}
 
@@ -155,7 +158,11 @@ class QueryStringPatternTranslator:
 
     def _value_tree(self, field, value, negate):
         """DNF for a single 'field = value' (negated when negate is True)."""
-        if " " not in value and "\t" not in value:
+        if not any(c.isspace() for c in value):
+            if value.upper() in QUERY_OPERATOR_WORDS:
+                raise SearchFeatureNotSupportedError(
+                    "'{}' is a Criminal IP query operator and cannot be searched as a value of '{}'"
+                    .format(value, field))
             return _term("s", field, value, negate)
         result_field = FILTER_RESULT_FIELDS.get(field)
         if not result_field:
@@ -166,7 +173,12 @@ class QueryStringPatternTranslator:
         if negate:
             # 'NOT field: token' would also drop unrelated records, so only the client side check is used.
             return _term("p", result_field, phrase, True)
-        token = max(phrase.split(" "), key=len)
+        tokens = [t for t in phrase.split(" ") if t.upper() not in QUERY_OPERATOR_WORDS]
+        if not tokens:
+            raise SearchFeatureNotSupportedError(
+                "'{}' contains only Criminal IP query operators and cannot be searched".format(value))
+        # Never send an operator word as the server-side token: 'title: OR' would split the query.
+        token = max(tokens, key=len)
         return [frozenset([("s", field, token, False), ("p", result_field, phrase, False)])]
 
     def _field_tree(self, field, raw_value, comparator, negate):
