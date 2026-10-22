@@ -163,3 +163,10 @@ class TestCriminalIPJsonToStix(unittest.TestCase):
         record = dict(load_results("v1_banner_search_openssh_kr.json")[0])
         record["product"] = {"x": 1}
         assert "objects" in to_bundle([record])
+
+    def test_record_without_mappable_fields_is_skipped(self):
+        good = load_results("v2_banner_search_openssh_kr.json")[0]
+        bundle = to_bundle([{}, {"ip_address": None, "scan_dtime": "2026-10-22 07:20:04"}, good])
+        observed = bundle["objects"][1:]
+        assert len(observed) == 1
+        assert observed[0]["objects"]

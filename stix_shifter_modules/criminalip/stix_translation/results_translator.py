@@ -194,4 +194,6 @@ class ResultsTranslator(JSONToStix):
         if isinstance(records, dict):
             records = [records]
         normalized = [normalize_record(r) for r in (records or [])]
+        # A record with nothing mappable would become an observed-data with no objects, which is invalid STIX.
+        normalized = [r for r in normalized if not isinstance(r, dict) or set(r) - {"observed_time"}]
         return super().translate_results(data_source, normalized)
