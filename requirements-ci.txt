@@ -1,0 +1,3 @@
+# Tools CI installs on top of stix-shifter's requirements-dev.txt.
+# The connector itself has no dependencies beyond stix-shifter's own.
+flake8==7.4.1

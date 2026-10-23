@@ -1,0 +1,97 @@
+name: CI
+
+# Install the connector into Huntbase's stix-shifter fork and run its tests,
+# stix-shifter's module validation, flake8 and the mapping validator, as in
+# the README's "Develop and test" section. The tests use recorded responses:
+# no API key and no calls to criminalip.io.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  STIX_SHIFTER_REPOSITORY: huntbase-io/stix-shifter
+  STIX_SHIFTER_REF: develop
+
+jobs:
+  test:
+    name: Test in stix-shifter (${{ github.event_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the connector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: connector
+          persist-credentials: false
+
+      - name: Check out stix-shifter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.STIX_SHIFTER_REPOSITORY }}
+          ref: ${{ env.STIX_SHIFTER_REF }}
+          path: stix-shifter
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            stix-shifter/requirements-dev.txt
+            stix-shifter/stix_shifter*/**/requirements.txt
+            connector/requirements-ci.txt
+
+      - name: Install stix-shifter requirements
+        working-directory: stix-shifter
+        run: |
+          python generate_requirements.py
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-dev.txt -r ../connector/requirements-ci.txt
+
+      - name: Install the connector (copy)
+        working-directory: stix-shifter
+        # A copy, not a symlink: tests/utils walks stix_shifter_modules/ without following symlinks.
+        run: |
+          ../connector/scripts/install_into_stix_shifter.sh --copy .
+          test -f stix_shifter_modules/criminalip/entry_point.py
+          test ! -L stix_shifter_modules/criminalip
+
+      - name: Connector tests
+        working-directory: stix-shifter
+        run: python -m pytest stix_shifter_modules/criminalip -q
+
+      - name: stix-shifter module validation (tests/utils)
+        working-directory: stix-shifter
+        run: python -m pytest tests/utils -q
+
+      - name: flake8
+        working-directory: stix-shifter
+        run: |
+          # Blocking: stix-shifter's CI selection (syntax errors, undefined names) ...
+          flake8 stix_shifter_modules/criminalip --count --select=E901,E999,F821,F822,F823 --show-source --statistics
+          # ... and the README's full check at stix-shifter's 127-character line length.
+          flake8 stix_shifter_modules/criminalip --count --max-line-length=127 --show-source --statistics
+          # Non-blocking: complexity warnings (C901), as in stix-shifter's CI.
+          flake8 stix_shifter_modules/criminalip --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Mapping validator
+        working-directory: stix-shifter
+        # validate_mapping.py always exits 0, so fail on any ERROR line it logs. Warnings do not fail the build.
+        run: |
+          python map_validator/validate_mapping.py \
+            stix_shifter_modules/criminalip/stix_translation/json/to_stix_map.json 2>&1 | tee "${RUNNER_TEMP}/map_validator.log"
+          if grep -q '^ERROR' "${RUNNER_TEMP}/map_validator.log"; then
+            echo "::error title=Mapping validator::to_stix_map.json has errors; see the log above."
+            exit 1
+          fi
