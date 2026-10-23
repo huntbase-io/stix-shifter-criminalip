@@ -25,7 +25,29 @@ stix_shifter_modules/criminalip/
 For the full connector documentation (mapping rules, query quirks, pagination, error codes and limitations),
 see [stix_shifter_modules/criminalip/README.md](stix_shifter_modules/criminalip/README.md).
 
-## Install into stix-shifter
+## Install the released wheel
+
+Each `v*` tag publishes `stix_shifter_modules_criminalip-<version>-py3-none-any.whl` (plus `SHA256SUMS`) as a
+[GitHub release](https://github.com/huntbase-io/stix-shifter-criminalip/releases) asset. It installs the module at
+`stix_shifter_modules/criminalip` next to an installed stix-shifter (tested with stix-shifter 8.1.2 from PyPI):
+
+```bash
+pip install "stix-shifter==8.1.2" "stix-shifter-utils==8.1.2" \
+  https://github.com/huntbase-io/stix-shifter-criminalip/releases/download/v1.0.0/stix_shifter_modules_criminalip-1.0.0-py3-none-any.whl
+stix-shifter translate criminalip query '{}' "[ipv4-addr:value = '8.8.8.0/24' AND network-traffic:dst_port = 443]"
+```
+
+With uv, reference the asset in `[tool.uv.sources]` (uv.lock then records its sha256):
+
+```toml
+[project]
+dependencies = ["stix-shifter-modules-criminalip==1.0.0"]
+
+[tool.uv.sources]
+stix-shifter-modules-criminalip = { url = "https://github.com/huntbase-io/stix-shifter-criminalip/releases/download/v1.0.0/stix_shifter_modules_criminalip-1.0.0-py3-none-any.whl" }
+```
+
+## Install into a stix-shifter checkout
 
 ```bash
 # upstream; Huntbase uses its fork: git clone -b develop https://github.com/huntbase-io/stix-shifter.git
@@ -140,7 +162,9 @@ The unit tests use trimmed real Criminal IP responses (`tests/*/sample_responses
 
 CI (`.github/workflows/ci.yml`) runs these steps on every push and pull request against Huntbase's stix-shifter fork
 (`develop`, Python 3.12) after a `--copy` install. flake8 complexity warnings (C901) are reported but do not fail the
-build; mapping-validator errors do. A weekly workflow (`.github/workflows/live-api-check.yml`) also runs a ping, an IP
+build; mapping-validator errors do. Pushing a `v<version>` tag runs `.github/workflows/release.yml`: the same tests, a wheel
+build with stix-shifter's `build_tools`, a smoke test of the wheel against stix-shifter 8.1.2 from PyPI, and a GitHub
+release with the wheel and `SHA256SUMS`. A weekly workflow (`.github/workflows/live-api-check.yml`) also runs a ping, an IP
 lookup, a banner search and a passthrough query against the live API; it needs the `CRIMINALIP_API_KEY` repository
 secret and skips itself when the secret is not set.
 

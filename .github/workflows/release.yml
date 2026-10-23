@@ -1,0 +1,149 @@
+name: Release
+
+# Build the connector wheel (stix_shifter_modules_criminalip-<version>-py3-none-any.whl) with stix-shifter's own
+# packaging tooling and publish it as a GitHub release asset, together with SHA256SUMS.
+#
+# Release by pushing a tag `v<version>`, e.g. `v1.0.0`. The wheel installs the module at
+# stix_shifter_modules/criminalip next to an existing stix-shifter install, e.g.:
+#
+#   pip install "stix-shifter==8.1.2" "stix-shifter-utils==8.1.2" \
+#     https://github.com/huntbase-io/stix-shifter-criminalip/releases/download/v1.0.0/stix_shifter_modules_criminalip-1.0.0-py3-none-any.whl
+#
+# hb-backend references the release asset URL in [tool.uv.sources], and uv.lock records its sha256.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  STIX_SHIFTER_REPOSITORY: huntbase-io/stix-shifter
+  STIX_SHIFTER_REF: develop
+  # The stix-shifter release the wheel is smoke-tested against (the version hb-backend pins).
+  STIX_SHIFTER_PIN: "8.1.2"
+
+jobs:
+  build:
+    name: Build and test the wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Resolve version
+        id: meta
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-]?(a|b|rc|post|dev)[0-9]+)*$'; then
+            echo "::error::Tag '${TAG}' is not v<PEP 440 version>"; exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the connector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: connector
+          persist-credentials: false
+
+      - name: Check out stix-shifter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.STIX_SHIFTER_REPOSITORY }}
+          ref: ${{ env.STIX_SHIFTER_REF }}
+          path: stix-shifter
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install stix-shifter requirements
+        working-directory: stix-shifter
+        run: |
+          python generate_requirements.py
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-dev.txt
+
+      - name: Install the connector (copy) and run its tests
+        working-directory: stix-shifter
+        run: |
+          ../connector/scripts/install_into_stix_shifter.sh --copy .
+          python -m pytest stix_shifter_modules/criminalip -q
+          python -m pytest tests/utils -q
+
+      - name: Build the wheel
+        working-directory: stix-shifter
+        env:
+          MODE: criminalip
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          python -m build_tools.run_build
+          ls -l dist
+          test -f "dist/stix_shifter_modules_criminalip-${VERSION}-py3-none-any.whl"
+          mkdir -p "${RUNNER_TEMP}/release"
+          cp dist/stix_shifter_modules_criminalip-*.whl "${RUNNER_TEMP}/release/"
+          cd "${RUNNER_TEMP}/release" && sha256sum *.whl | tee SHA256SUMS
+
+      - name: Smoke-test the wheel against the pinned stix-shifter release
+        run: |
+          python -m venv "${RUNNER_TEMP}/smoke"
+          . "${RUNNER_TEMP}/smoke/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install "stix-shifter==${STIX_SHIFTER_PIN}" "stix-shifter-utils==${STIX_SHIFTER_PIN}" \
+            "${RUNNER_TEMP}"/release/stix_shifter_modules_criminalip-*.whl
+          cd "${RUNNER_TEMP}"
+          stix-shifter translate criminalip query '{}' \
+            "[ipv4-addr:value = '8.8.8.0/24' AND network-traffic:dst_port = 443]" | tee query.json
+          grep -q '"ip: 8.8.8.0/24 port: 443"' query.json
+          stix-shifter translate criminalip query '{}' "product: OpenSSH port: 22" '{"language":"criminalip"}' \
+            | grep -q '"product: OpenSSH port: 22"'
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheel
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wheel
+          path: release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" release/*.whl release/SHA256SUMS \
+            --repo "$REPO" \
+            --verify-tag \
+            --title "stix-shifter-modules-criminalip ${VERSION}" \
+            --notes "Criminal IP connector for stix-shifter, built with stix-shifter's packaging tooling and smoke-tested against stix-shifter ${STIX_SHIFTER_PIN:-8.1.2}.
+
+          Install next to stix-shifter:
+
+          \`\`\`
+          pip install https://github.com/${REPO}/releases/download/${TAG}/stix_shifter_modules_criminalip-${VERSION}-py3-none-any.whl
+          \`\`\`
+
+          SHA-256 sums are in SHA256SUMS."
