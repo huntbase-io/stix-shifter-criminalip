@@ -1,0 +1,115 @@
+name: Live API check
+
+# Weekly smoke test against the real Criminal IP API: installs the connector
+# into stix-shifter and runs a ping, an IP lookup, a banner search and a
+# passthrough results call (about 5 API calls), checking for success and valid
+# observed-data. Needs the CRIMINALIP_API_KEY repository secret and skips with
+# a notice when it is missing. Never runs on pull requests.
+
+on:
+  schedule:
+    # Mondays 08:00 UTC. huntbase-io/steampipe-plugin-criminalip runs at 06:00 UTC:
+    # Criminal IP allows one concurrent call per key, so keep the two apart.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-api-check
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  STIX_SHIFTER_REPOSITORY: huntbase-io/stix-shifter
+  STIX_SHIFTER_REF: develop
+
+jobs:
+  live-check:
+    name: Query the live API
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check for the API key
+        id: key
+        env:
+          CRIMINALIP_API_KEY: ${{ secrets.CRIMINALIP_API_KEY }}
+        run: |
+          if [ -z "${CRIMINALIP_API_KEY}" ]; then
+            echo "::notice title=Live API check skipped::The CRIMINALIP_API_KEY secret is not set, so no API calls were made. Add it with: gh secret set CRIMINALIP_API_KEY -R ${GITHUB_REPOSITORY}"
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::add-mask::${CRIMINALIP_API_KEY}"
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Check out the connector
+        if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: connector
+          persist-credentials: false
+
+      - name: Check out stix-shifter
+        if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.STIX_SHIFTER_REPOSITORY }}
+          ref: ${{ env.STIX_SHIFTER_REF }}
+          path: stix-shifter
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.key.outputs.present == 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            stix-shifter/requirements-dev.txt
+            stix-shifter/stix_shifter*/**/requirements.txt
+
+      - name: Install stix-shifter and the connector
+        if: steps.key.outputs.present == 'true'
+        working-directory: stix-shifter
+        run: |
+          python generate_requirements.py
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+          ../connector/scripts/install_into_stix_shifter.sh --copy .
+
+      - name: Run live checks
+        if: steps.key.outputs.present == 'true'
+        working-directory: stix-shifter
+        env:
+          CRIMINALIP_API_KEY: ${{ secrets.CRIMINALIP_API_KEY }}
+        run: PYTHONPATH="${PWD}" python ../connector/.github/scripts/live_api_check.py
+
+  report:
+    name: Report API drift
+    needs: live-check
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write # open or update the api-drift issue
+    steps:
+      - name: Open or update the api-drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create api-drift --color D93F0B \
+            --description "The weekly live Criminal IP API check failed" --force
+          body="The weekly live API check failed: ${RUN_URL}"
+          number="$(gh issue list --label api-drift --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "${number}" ]; then
+            gh issue comment "${number}" --body "${body}"
+          else
+            gh issue create --label api-drift \
+              --title "Live Criminal IP API check failed" \
+              --body "${body}
+
+          The Criminal IP API may have changed, or the CRIMINALIP_API_KEY secret may be invalid or out of credits. Later failures are added to this issue as comments. Close it once the check passes again."
+          fi

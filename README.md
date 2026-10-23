@@ -138,6 +138,12 @@ symlink install. Run it after a `--copy` install.
 
 The unit tests use trimmed real Criminal IP responses (`tests/*/sample_responses/`) and make no network calls.
 
+CI (`.github/workflows/ci.yml`) runs these steps on every push and pull request against Huntbase's stix-shifter fork
+(`develop`, Python 3.12) after a `--copy` install. flake8 complexity warnings (C901) are reported but do not fail the
+build; mapping-validator errors do. A weekly workflow (`.github/workflows/live-api-check.yml`) also runs a ping, an IP
+lookup, a banner search and a passthrough query against the live API; it needs the `CRIMINALIP_API_KEY` repository
+secret and skips itself when the secret is not set.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
