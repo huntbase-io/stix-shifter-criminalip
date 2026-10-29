@@ -1,0 +1,35 @@
+# gitleaks configuration: the default ruleset plus narrow allowlists for
+# known false positives. Keep every entry specific to a path and a value
+# shape, and say why it is safe.
+[extend]
+useDefault = true
+
+[[allowlists]]
+# Recorded Criminal IP API responses include SSH service banners, which
+# carry the scanned server's *public* host key ("Key: AAAA...").
+# Public host keys are not secrets.
+description = "SSH public host keys in recorded Criminal IP banner sample responses"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^stix_shifter_modules/criminalip/tests/stix_(translation|transmission)/sample_responses/[^/]+\.json$''']
+regexTarget = "line"
+regexes = ['''\\nKey: AAAA[A-Za-z0-9+/]+={0,2}\\nAlgorithm: (ssh-|ecdsa-|rsa-)''']
+
+[[allowlists]]
+# Test dummy API key used by the transmission unit tests (mocked HTTP).
+description = "Fake API key in the transmission unit tests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^stix_shifter_modules/criminalip/tests/stix_transmission/test_criminalip\.py$''']
+regexTarget = "line"
+regexes = ['''FAKE_KEY = 'test-api-key-0123456789'$''']
+
+[[allowlists]]
+# STIX mapping entries: "key" holds a STIX object path such as
+# "x509-certificate.subject", not a credential.
+description = "STIX object paths in the to-STIX mapping"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^stix_shifter_modules/criminalip/stix_translation/json/to_stix_map\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"key": "[a-z0-9-]+(\.[a-z0-9_-]+)+",?\s*$''']
